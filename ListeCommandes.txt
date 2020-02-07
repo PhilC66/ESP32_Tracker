@@ -1,0 +1,17 @@
+Liste des commandes SMS Tracker
+
+TEL=
+LST
+ST/ETAT
+SYS
+IMEI
+ID
+TIMERLENT
+TIMERRAPIDE
+VITESSEMINI
+GPRSPARAM=apn:user:pass (case sensitive)
+POSITION
+WIFIOFF
+Wifi,ssid,pass (case sensitive)
+TIMEOUTWIFI
+

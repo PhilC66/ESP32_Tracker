@@ -2,7 +2,7 @@
 /* Ph Corbel 31/01/2020 */
 /* ESP32+Sim808
   Compilation LOLIN D32,default,80MHz, ESP32 1.0.2 (1.0.4 bugg?)
-  Arduino IDE 1.8.10 :  76%,  14% sur PC
+  Arduino IDE 1.8.10 : 955350 72%, 47000 14% sur PC
   Arduino IDE 1.8.10 :  76%,  14% sur raspi
 
 
@@ -56,7 +56,7 @@ bool    SPIFFS_present = false;
 
 const String soft = "ESP32_Tracker.ino.d32"; // nom du soft
 String ver        = "V0-0";
-int    Magique    = 14;
+int    Magique    = 15;
 
 char filecalibration[11] = "/coeff.txt";    // fichier en SPIFFS contenant les data de calibration
 #define nSample (1<<4)    // nSample est une puissance de 2, ici 16 (4bits)
@@ -66,7 +66,7 @@ unsigned long debut     = 0; // pour decompteur temps wifi
 unsigned long timer100  = 0; // pour timer 100ms adc
 int CoeffTension[4];          // Coeff calibration Tension
 int CoeffTensionDefaut = 7000;// Coefficient par defaut
-
+bool FlagReset = false;
 byte Accu = 0; // accumulateur vitesse
 float lat, lng, course, speed;
 
@@ -82,8 +82,8 @@ TinyGsmClient client(modem);
 
 PubSubClient mqttClient(client);
 
-// WebServer server(80);
-// File UploadFile;
+WebServer server_wifi(80);
+File UploadFile;
 
 struct  config_t           // Structure configuration sauvée en EEPROM
 {
@@ -91,6 +91,7 @@ struct  config_t           // Structure configuration sauvée en EEPROM
   int     trapide;         // timer send data rapide (roulage)
   int     tlent;           // timer send data lent (arret)
   int     vtransition;     // vitesse transition arret/roulage
+  int     timeoutWifi;     // tempo coupure Wifi si pas de mise a jour (s)
   char    apn[11];         // APN
   char    gprsUser[11];    // user for APN
   char    gprsPass[11];    // pass for APN
@@ -133,6 +134,7 @@ void setup() {
     config.trapide       = 15;      // secondes
     config.tlent         = 15 * 60; // secondes
     config.vtransition   = 2;       // kmh
+    config.timeoutWifi   = 10 * 60;
     String temp          = "TPCF_63000";
     String tempapn       = "sl2sfr";//"free";
     String tempUser      = "";
@@ -156,6 +158,10 @@ void setup() {
 
   Serial.print("Modem Info: ");
   Serial.println(modemInfo);
+
+  if (modem.enableGPS()) {
+    Serial.println("GPS Enabled");
+  }
 
   Serial.print("Waiting for network...");
   if (!modem.waitForNetwork()) {
@@ -200,9 +206,6 @@ void setup() {
   mqttClient.setServer( server, 1883 ); // Set the MQTT broker details.
   //// mqttClient.setCallback( mqttSubscriptionCallback );   // Set the MQTT message handler function.
 
-  if (modem.enableGPS()) {
-    Serial.println("GPS Enabled");
-  }
   while (!MajHeure()) {
     Serial.print(".");
     Alarm.delay(500);
@@ -298,6 +301,7 @@ void traite_sms(int index) {
   String textesms;
   String SenderNum;
   String Sendername;
+  Serial.print("sms a traiter:"), Serial.println(index);
   if (index == 99) {
     sms = false;
     textesms = messagetest;
@@ -308,6 +312,7 @@ void traite_sms(int index) {
     SenderNum = modem.getSenderID(index, false);
     Serial.print("sender: "), Serial.println(SenderNum);
     Sendername = modem.getSenderName(index, false);
+    Serial.print("sendername length: "), Serial.println(Sendername.length());
     Serial.print("sendername: "), Serial.println(Sendername);
   }
 
@@ -318,34 +323,13 @@ void traite_sms(int index) {
   }
   if ((sms && Sendername.length() > 0) || !sms) { // emetteur reconnu dans Phone Book
     messageId();
-    if (!(textesms.indexOf(F("TEL")) == 0 || textesms.indexOf(F("tel")) == 0 || textesms.indexOf(F("Tel")) == 0)) {
+    if (!(textesms.indexOf(F("TEL")) == 0 || textesms.indexOf(F("tel")) == 0 || textesms.indexOf(F("Tel")) == 0
+          || textesms.indexOf(F("Wifi")) == 0 || textesms.indexOf(F("GPRSPARAM")) == 0)) {
       textesms.toUpperCase();    // passe tout en Maj sauf si "TEL"
       textesms.replace(" ", ""); // supp tous les espaces
     }
-    if (textesms.indexOf(F("TEL")) == 0
-        || textesms.indexOf(F("Tel")) == 0
-        || textesms.indexOf(F("tel")) == 0) { // entrer nouveau num
-      /*------------ a faire -------------- */
-      messageId();
-      Serial.println("nouveau numero");
-      sendSMSReply(SenderNum, sms);
-    }
-    else if (textesms == F("LST")) {	//	Liste des Num Tel
-      messageId();
-      /*------------ a faire -------------- */
-      Serial.println("liste numero");
-      sendSMSReply(SenderNum, sms);
-    }
-    else if (textesms.indexOf(F("ETAT")) == 0 || textesms.indexOf(F("ST")) == 0) {			// "ETAT? de l'installation"
-      generationMessage();
-      sendSMSReply(SenderNum, sms);
-    }
-    else if (textesms.indexOf(F("SYS")) == 0) {					//	SYS? Etat Systeme
-      messageId();
-      Serial.println("sys");
-      sendSMSReply(SenderNum, sms);
-    }
-    else if (textesms.indexOf(F("ID=")) == 0) {			//	Id= nouvel Id
+
+    if (textesms.indexOf(F("ID=")) == 0) {			//	Id= nouvel Id
       String temp = textesms.substring(3);
       if (temp.length() > 0 && temp.length() < 11) {
         Id = "";
@@ -354,8 +338,96 @@ void traite_sms(int index) {
         Id = String(config.Idchar);
         Id += fl;
       }
-      messageId();
       message += F("Nouvel Id");
+      sendSMSReply(SenderNum, sms);
+    }
+    else if (textesms.indexOf(F("TEL")) == 0
+             || textesms.indexOf(F("Tel")) == 0
+             || textesms.indexOf(F("tel")) == 0) { // entrer nouveau num
+      bool FlagOK = true;
+      bool efface = false;
+      byte j = 0;
+      String newnumero;
+      String newnom;
+      int indexreplace = 0;
+
+      if (textesms.indexOf(char(61)) == 4) { // TELn= reserver correction/suppression
+        int i = textesms.substring(3).toInt();// recupere n° de index
+        i = i / 1; // important sinon i ne prend pas sa valeur dans les comparaison?
+        if (i < 1) FlagOK = false;
+        indexreplace = i;// index du PB a remplacer
+        j = 5;
+        // on efface la ligne sauf la 1 pour toujours garder au moins un numéro
+        if ((i != 1) && (textesms.indexOf(F("efface")) == 5 || textesms.indexOf(F("EFFACE")) == 5 )) {
+          efface = true;
+          bool ok = modem.deletePhonebookEntry(i);
+          if (ok) {
+            message += "entree PB effacee";
+          } else {
+            message += "erreur efface entree PB";
+          }
+          goto fin_tel;
+        }
+      }
+      else if (textesms.indexOf(char(61)) == 3) { // TEL= nouveau numero
+        j = 4;
+      }
+      else {
+        FlagOK = false;
+      }
+      if (textesms.indexOf("+") == j) {			// debut du num tel +
+        if (textesms.indexOf(char(44)) == j + 12) {	// verif si longuer ok
+          newnumero = textesms.substring(j, j + 12);
+          newnom = textesms.substring(j + 13, j + 27);// pas de verif si long<>0?
+        }
+        else {
+          FlagOK = false;
+        }
+      }
+      else {
+        FlagOK = false;
+      }
+fin_tel:
+      if (!FlagOK) { // erreur de format
+        message += F("Commande non reconnue ?");// non reconnu
+        message += fl;
+        sendSMSReply(SenderNum, sms);					// SMS non reconnu
+      }
+      else {
+        if (!efface) {
+          bool ok = false;
+          if (indexreplace == 0) {
+            ok = modem.addPhonebookEntry(newnumero, newnom); //ecriture dans PhoneBook
+          } else {
+            ok = modem.addPhonebookEntry(newnumero, newnom, indexreplace); //ecriture dans PhoneBook
+          }
+          Alarm.delay(100);
+          if (ok) {
+            message += "Nouvelle entree Phone Book";
+          } else {
+            message += "Erreur entree Phone Book";
+          }
+        }
+        sendSMSReply(SenderNum, sms);
+      }
+    }
+    else if (textesms.indexOf("LST") == 0) {	//	Liste des Num Tel
+      int nligne = modem.ListPhonebook(1, 10);
+      for (int idx = 1; idx < nligne + 1; idx ++) {
+        message += String(idx) + ":";
+        message += modem.readPhonebookEntry(idx).number;
+        message += ",";
+        message += modem.readPhonebookEntry(idx).text;
+        message += fl;
+      }
+      sendSMSReply(SenderNum, sms);
+    }
+    else if (textesms.indexOf(F("ETAT")) == 0 || textesms.indexOf(F("ST")) == 0) {			// "ETAT? de l'installation"
+      generationMessage();
+      sendSMSReply(SenderNum, sms);
+    }
+    else if (textesms.indexOf(F("SYS")) == 0) {					//	SYS? Etat Systeme
+      Serial.println("sys");
       sendSMSReply(SenderNum, sms);
     }
     else if (textesms.indexOf(F("TIMERLENT")) == 0) { //	Timer lent
@@ -378,8 +450,8 @@ void traite_sms(int index) {
       if ((textesms.indexOf(char(61))) == 11) {
         int i = textesms.substring(12).toInt();
         if (i > 4 && i <= 3601) {								//	ok si entre 5 et 3600
-        config.trapide = i;
-        sauvConfig();													// sauvegarde en EEPROM
+          config.trapide = i;
+          sauvConfig();													// sauvegarde en EEPROM
           Alarm.disable(send);
           send = Alarm.timerRepeat(config.trapide, senddata); // send data
           Alarm.enable(send);
@@ -395,7 +467,7 @@ void traite_sms(int index) {
         int i = textesms.substring(12).toInt();
         if (i > 0 && i <= 21) {								//	ok si entre 1 et 20
           config.vtransition = i;
-          sauvConfig();													// sauvegarde en EEPROM          
+          sauvConfig();													// sauvegarde en EEPROM
         }
       }
       message += F("Vitesse mini = ");
@@ -403,38 +475,88 @@ void traite_sms(int index) {
       message += fl;
       sendSMSReply(SenderNum, sms);
     }
-    else if (textesms.indexOf(F("PARAMGPRS")) == 0) {
+    else if (textesms.indexOf(F("PARAM")) > 0) {
+      /*
+      {"param":{"timerlent":600,"timerrapide":15,"vitessemini":2}}
+      */
+      bool erreur = false;
+      // Serial.print("position X:"),Serial.println(textesms.substring(7, 8));
+      // Serial.print("position ::"),Serial.println(textesms.substring(8, 9));
+      if (textesms.substring(8, 9) == ":") {
+        // json en reception sans lumlut
+        DynamicJsonDocument doc(104);
+        DeserializationError err = deserializeJson(doc, textesms);
+        if(err){
+          erreur = true;
+        }
+        else{
+          // Serial.print(F("Deserialization succeeded"));
+          JsonObject param = doc["PARAM"];
+          config.tlent = param["TIMERLENT"];
+          config.trapide = param["TIMERRAPIDE"];
+          config.vtransition = param["VITESSEMINI"];
+          sauvConfig();
+        }
+      }
+      else{
+        erreur = true;
+      }
+      if(!erreur){
+        // calculer taille https://arduinojson.org/v6/assistant/
+        DynamicJsonDocument doc(104);
+        JsonObject param = doc.createNestedObject("param");
+        param["timerlent"] = config.tlent;
+        param["timerrapide"] = config.trapide;
+        param["vitessemini"] = config.vtransition;
+        String jsonbidon;
+        serializeJson(doc, jsonbidon);
+        // serializeJson(doc, Serial);
+        message += jsonbidon;
+      }
+      else{
+        message += "erreur json";
+      }
+      message += fl;
+      sendSMSReply(SenderNum, sms);
+    }
+    else if (textesms.indexOf(F("GPRSPARAM")) == 0) {
       // Parametre GPRS = APN:USER:PASS
       bool valid = false;
       if ((textesms.indexOf(char(61))) == 9) {
         int x = textesms.indexOf(":");
-				int y = textesms.indexOf(":",x+1);
+        int y = textesms.indexOf(":", x + 1);
         int z = textesms.length();
-        Serial.printf("%d:%d:%d\n",x,y,z);
-        
-        String sapn = textesms.substring(10, x);//.c_str()
-        String suser = textesms.substring(x+1,y);//.c_str() 
-        String spass = textesms.substring(y+1,z);//.c_str() 
-        Serial.println(sapn);
-        Serial.println(suser);
-        Serial.println(spass);
-        
-        if(x > 0 && y > 0 && x < textesms.length() && y < textesms.length()){
+        // Serial.printf("%d:%d:%d\n",x,y,z);
+        if (x > 0 && y > 0 && x < textesms.length() && y < textesms.length()) {
+          String sapn = textesms.substring(10, x);//.c_str()
+          String suser = textesms.substring(x + 1, y); //.c_str()
+          String spass = textesms.substring(y + 1, z); //.c_str()
+          Serial.println(sapn);
+          Serial.println(suser);
+          Serial.println(spass);
+          sapn.toCharArray(config.apn, sapn.length() + 1);
+          suser.toCharArray(config.gprsUser, suser.length() + 1);
+          spass.toCharArray(config.gprsPass, spass.length() + 1);
           valid = true;
-          
         }
-        if(valid){
-          // sauvConfig();													// sauvegarde en EEPROM          
+        if (valid) {
+          sauvConfig();													// sauvegarde en EEPROM
+          message += "Sera pris en compte au prochain demarrage\nOu envoyer RST";
+          message += fl;
+        } else {
+          message += "Erreur format";
+          message += fl;
         }
       }
-      message += F("Parametre GPRS APN:USER:PASS = ");
+      message += F("Parametre GPRS APN:USER:PASS =");
+      message += fl;
       message += String(config.apn);
       message += ":";
       message += String(config.gprsUser);
       message += ":";
-      message += String(config.gprsPass);      
+      message += String(config.gprsPass);
       message += fl;
-      sendSMSReply(SenderNum, sms);      
+      sendSMSReply(SenderNum, sms);
     }
     else if (textesms.indexOf(F("IMEI")) > -1) {
       message += F("IMEI = ");
@@ -442,8 +564,66 @@ void traite_sms(int index) {
       message += fl;
       sendSMSReply(SenderNum, sms);
     }
+    else if (textesms.indexOf(F("TIMEOUTWIFI")) > -1) { // Parametre Arret Wifi
+      if (textesms.indexOf(char(61)) == 11) {
+        int n = textesms.substring(12, textesms.length()).toInt();
+        if (n > 9 && n < 3601) {
+          config.timeoutWifi = n;
+          sauvConfig();														// sauvegarde en EEPROM
+        }
+      }
+      message += F("TimeOut Wifi (s) = ");
+      message += config.timeoutWifi;
+      message += fl;
+      sendSMSReply(SenderNum, sms);
+    }
+    else if (textesms.indexOf(F("Wifi")) == 0) { // demande connexion Wifi
+      byte pos1 = textesms.indexOf(char(44));//","
+      byte pos2 = textesms.indexOf(char(44), pos1 + 1);
+      String ssids = textesms.substring(pos1 + 1, pos2);
+      String pwds  = textesms.substring(pos2 + 1, textesms.length());
+      char ssid[20];
+      char pwd[20];
+      ssids.toCharArray(ssid, ssids.length() + 1);
+      ssids.toCharArray(ssid, ssids.length() + 1);
+      pwds.toCharArray(pwd, pwds.length() + 1);
+      Serial.print("ssid:"), Serial.println(ssid);
+      ConnexionWifi(ssid, pwd, SenderNum, sms, index); // sms reponse sera généré par routine
+    }
+    else if (textesms.indexOf(F("WIFIOFF")) > -1) { // Arret Wifi
+      message += F("Wifi off");
+      message += fl;
+      sendSMSReply(SenderNum, sms);
+      WifiOff();
+    }
+    else if (textesms.indexOf(F("POSITION")) == 0) {	// demande position
+      // on lance la demande au GPS
+      if (getGPSdata()) {
+        //http://maps.google.fr/maps?f=q&hl=fr&q=42.8089900,2.2614000
+        message += F("http://maps.google.fr/maps?f=q&hl=fr&q=");
+        message += String(lat, 6);
+        message += F(",");
+        message += String(lng, 6);
+        message += fl;
+        message += F("Vitesse = ");
+        message += String(speed, 1);
+        message += F("km/h");
+        message += fl;
+        message += F("Dir = ");
+        message += String(course, 0);
+      }
+      else { // si FIX GPS KO
+        message += F("GPS pas verrouille !");
+      }
+      sendSMSReply(SenderNum, sms);
+    }
+    else if (textesms == F("RST")) {               // demande RESET
+      message += F("Le systeme va etre relance");  // apres envoie du SMS!
+      message += fl;
+      FlagReset = true;                            // reset prochaine boucle
+      sendSMSReply(SenderNum, sms);
+    }
     else {
-      messageId();
       message += F("message non reconnu");
       sendSMSReply(SenderNum, sms);
     }
@@ -454,7 +634,7 @@ void traite_sms(int index) {
 
 sortir:
   if (sms) {
-    Serial.print("delete sms: "), Serial.println(modem.emptySMSBuffer()); //emptySMSBuffer dell all sms
+    EffaceSMS(index);
   }
 }
 //---------------------------------------------------------------------------
@@ -468,11 +648,15 @@ void Acquisition() {
   lastlon = lng;
   gereCadence();
 
-  int index = modem.newMessageIndex(0); // verifie arrivée sms
+  int idx = modem.newMessageIndex(0); // verifie arrivée sms
 
-  if (index > 0) {
-    Serial.print("sms recu:"), Serial.println(index);
-    traite_sms(index);
+  if (idx > 0) {
+    Serial.print("sms recu:"), Serial.println(idx);
+    traite_sms(idx);
+  }
+  else if (idx == 0 && FlagReset) {
+    FlagReset = false;
+    ResetHard();				//	reset hard
   }
 }
 //---------------------------------------------------------------------------
@@ -676,11 +860,11 @@ void mqttPublish(long pubChannelID, char* pubWriteAPIKey, String dataArray[], St
        fieldArray - Array of values to publish, starting with field 1.
   */
 
-  int index = 0;
+  int idxdata = 0;
   String dataString = "";
-  while (index < nbrdata) {
-    dataString += "&" + fieldArray[index] + "=" + String(dataArray[index]);
-    index++;
+  while (idxdata < nbrdata) {
+    dataString += "&" + fieldArray[idxdata] + "=" + String(dataArray[idxdata]);
+    idxdata++;
   }
 
   Serial.println( dataString );
@@ -780,6 +964,112 @@ int moyenneAnalogique(int Pin) {	// calcul moyenne 10 mesures consécutives
   return moyenne;
 }
 //---------------------------------------------------------------------------
+void EffaceSMS(int s) {
+  bool err;
+  byte n = 0;
+  do {
+    err = modem.deleteSmsMessage(s);
+    n ++;
+    Serial.print(F("resultat del Sms "));	Serial.println(err);
+    if (n > 10) { // on efface tous si echec
+      err = modem.emptySMSBuffer(); // dell all sms
+      Serial.print(F("resultat delall Sms "));	Serial.println(err);
+      break;
+    }
+  } while (!err);
+}
+//---------------------------------------------------------------------------
+void ConnexionWifi(char* ssid, char* pwd, String number, bool sms, int index) {
+  mqttClient.disconnect();
+  modem.gprsDisconnect();
+  messageId();
+  Serial.print(F("connexion Wifi:")), Serial.print(ssid), Serial.print(char(44)), Serial.println(pwd);
+  String ip;
+  WiFi.begin(ssid, pwd);
+  // WiFi.mode(WIFI_STA);
+  byte timeout = 0;
+  bool error = false;
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+    timeout ++;
+    if (timeout > 60) {
+      error = true;
+      break;
+    }
+  }
+  if (!error) {
+    Serial.println();
+    Serial.println(F("WiFi connected"));
+    Serial.print(F("IP address: "));
+    ip = WiFi.localIP().toString();
+    Serial.println(ip);
+    ArduinoOTA.begin();
+
+    server_wifi.on("/",         HomePage);
+    server_wifi.on("/download", File_Download);
+    server_wifi.on("/upload",   File_Upload);
+    server_wifi.on("/fupload",  HTTP_POST, []() {
+      server_wifi.send(200);
+    }, handleFileUpload);
+    server_wifi.on("/delete",   File_Delete);
+    server_wifi.on("/dir",      SPIFFS_dir);
+    // server_wifi.on("/cal",      CalendarPage);
+    server_wifi.on("/Tel_list", Tel_listPage);
+    // server_wifi.on("/LumLUT",   LumLUTPage);
+    server_wifi.on("/timeremaining", handleTime); // renvoie temps restant sur demande
+    server_wifi.on("/datetime", handleDateTime); // renvoie Date et Heure
+    server_wifi.on("/wifioff",  WifiOff);
+    ///////////////////////////// End of Request commands
+    server_wifi.begin();
+    Serial.println(F("HTTP server started"));
+
+    message += F("Connexion Wifi : ");
+    message += fl;
+    message += String(ip);
+    message += fl;
+    message += String(WiFi.RSSI());
+    message += F(" dBm");
+    message += fl;
+    message += F("TimeOut Wifi ");
+    message += config.timeoutWifi;
+    message += " s";
+  }
+  else {
+    message += F("Connexion Wifi impossible");
+  }
+  sendSMSReply(number, sms);
+
+  if (sms) { // suppression du SMS
+    /* Obligatoire ici si non bouclage au redemarrage apres timeoutwifi
+      ou OTA sms demande Wifi toujours present */
+    EffaceSMS(index);
+  }
+  debut = millis();
+  if (!error) {
+    /* boucle permettant de faire une mise à jour OTA et serveur, avec un timeout en cas de blocage */
+    unsigned long timeout = millis();
+    while (millis() - timeout < config.timeoutWifi * 1000) {
+      // if(WiFi.status() != WL_CONNECTED) break; // wifi a été coupé on sort
+      ArduinoOTA.handle();
+      server_wifi.handleClient(); // Listen for client connections
+      delay(1);
+    }
+    WifiOff();
+  }
+}
+//---------------------------------------------------------------------------
+void WifiOff() {
+  Serial.println(F("Wifi off"));
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  WiFi.mode(WIFI_MODE_NULL);
+  btStop();
+  Alarm.delay(100);
+  ResetHard();
+}
+//---------------------------------------------------------------------------
 void ResetHard() {
   // GPIO13 to RS reset hard
   pinMode(PinReset, OUTPUT);
@@ -829,6 +1119,339 @@ void messageId() {
   message += fl;
 }
 //---------------------------------------------------------------------------
+void HomePage() {
+  SendHTML_Header();
+  webpage += F("<h3 class='rcorners_m'>Parametres</h3><br>");
+  webpage += F("<table align='center'>");
+  webpage += F("<tr>");
+  webpage += F("<td>Version</td>");
+  webpage += F("<td>");	webpage += ver;	webpage += F("</td>");
+  webpage += F("</tr>");
+
+  webpage += F("<tr>");
+  webpage += F("<td>Id</td>");
+  webpage += F("<td>");	webpage += String(config.Idchar);	webpage += F("</td>");
+  webpage += F("</tr>");
+
+  webpage += F("<tr>");
+  webpage += F("<td>APN GPRS</td>");
+  webpage += F("<td>");	webpage += String(config.apn);	webpage += F("</td>");
+  webpage += F("</tr>");
+
+  webpage += F("<tr>");
+  webpage += F("<td>GPRS User</td>");
+  webpage += F("<td>");	webpage += String(config.gprsUser);	webpage += F("</td>");
+  webpage += F("</tr>");
+
+  webpage += F("<tr>");
+  webpage += F("<td>GPRS Pass</td>");
+  webpage += F("<td>");	webpage += String(config.gprsPass);	webpage += F("</td>");
+  webpage += F("</tr>");
+
+  webpage += F("<tr>");
+  webpage += F("<td>Tempo Send Data GPS Rapide (5-3600s)</td>");
+  webpage += F("<td>");	webpage += String(config.trapide);	webpage += F("</td>");
+  webpage += F("</tr>");
+
+  webpage += F("<tr>");
+  webpage += F("<td>Tempo Send Data GPS Lent (10-3600s)</td>");
+  webpage += F("<td>");	webpage += String(config.tlent);	webpage += F("</td>");
+  webpage += F("</tr>");
+
+  webpage += F("<tr>");
+  webpage += F("<td>Vitesse mini (1-20kmh)</td>");
+  webpage += F("<td>");	webpage += String(config.vtransition);	webpage += F("</td>");
+  webpage += F("</tr>");
+
+  webpage += F("<tr>");
+  webpage += F("<td>TimeOut Wifi (s)</td>");
+  webpage += F("<td>");	webpage += String(config.timeoutWifi);	webpage += F("</td>");
+  webpage += F("</tr>");
+
+  webpage += F("</table><br>");
+
+  webpage += F("<a href='/download'><button>Download</button></a>");
+  webpage += F("<a href='/upload'><button>Upload</button></a>");
+  webpage += F("<a href='/delete'><button>Delete</button></a>");
+  webpage += F("<a href='/dir'><button>Directory</button></a>");
+  webpage += F("<a href='/Tel_list'><button>Tel_list</button></a>");
+  // webpage += F("<a href='/cal'><button>Calendar</button></a>");
+  // webpage += F("<a href='/LumLUT'><button>LumLUT</button></a>");
+  webpage += F("<a href='/wifioff'><button>Wifi Off</button></a>");
+  append_page_footer();
+  SendHTML_Content();
+  SendHTML_Stop(); // Stop is needed because no content length was sent
+}
+//---------------------------------------------------------------------------
+void Tel_listPage() {
+  SendHTML_Header();
+  webpage += F("<h3 class='rcorners_m'>Liste des num&eacute;ros t&eacute;l&eacute;phone</h3><br>");
+  webpage += F("<table align='center'>");
+  webpage += F("<tr>");
+  webpage += F("<th> Nom </th>");
+  webpage += F("<th> Num&eacute;ro </th>");
+  webpage += F("</tr>");
+  // if (gsm) {
+  int nligne = modem.ListPhonebook(1, 10);
+  for (int idx = 1; idx < nligne + 1; idx ++) {
+    webpage += F("<tr>");
+    webpage += F("<td>"); webpage += String(modem.readPhonebookEntry(idx).text); webpage += F("</td>");
+    webpage += F("<td>"); webpage += String(modem.readPhonebookEntry(idx).number); webpage += F("</td>");
+    webpage += F("</tr>");
+  }
+  webpage += F("</table><br>");
+  append_page_footer();
+  SendHTML_Content();
+  SendHTML_Stop(); // Stop is needed because no content length was sent
+  // }
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void File_Download() { // This gets called twice, the first pass selects the input, the second pass then processes the command line arguments
+  if (server_wifi.args() > 0 ) { // Arguments were received
+    if (server_wifi.hasArg("download")) DownloadFile(server_wifi.arg(0));
+  }
+  else SelectInput("Enter filename to download", "download", "download");
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void DownloadFile(String filename) {
+  if (SPIFFS_present) {
+    File download = SPIFFS.open("/" + filename,  "r");
+    if (download) {
+      server_wifi.sendHeader("Content-Type", "text/text");
+      server_wifi.sendHeader("Content-Disposition", "attachment; filename=" + filename);
+      server_wifi.sendHeader("Connection", "close");
+      server_wifi.streamFile(download, "application/octet-stream");
+      download.close();
+    } else ReportFileNotPresent("download");
+  } else ReportSPIFFSNotPresent();
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void File_Upload() {
+  append_page_header();
+  webpage += F("<h3>Select File to Upload</h3>");
+  webpage += F("<FORM action='/fupload' method='post' enctype='multipart/form-data'>");
+  webpage += F("<input class='buttons' style='width:40%' type='file' name='fupload' id = 'fupload' value=''><br>");
+  webpage += F("<br><button class='buttons' style='width:10%' type='submit'>Upload File</button><br>");
+  webpage += F("<a href='/'>[Back]</a><br><br>");
+  append_page_footer();
+  server_wifi.send(200, "text/html", webpage);
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void handleFileUpload() { // upload a new file to the Filing system
+  HTTPUpload& uploadfile = server_wifi.upload(); // See https://github.com/esp8266/Arduino/tree/master/libraries/ESP8266WebServer/srcv
+  // For further information on 'status' structure, there are other reasons such as a failed transfer that could be used
+  if (uploadfile.status == UPLOAD_FILE_START)
+  {
+    String filename = uploadfile.filename;
+    if (!filename.startsWith("/")) filename = "/" + filename;
+    Serial.print(F("Upload File Name: ")); Serial.println(filename);
+    SPIFFS.remove(filename);                  // Remove a previous version, otherwise data is appended the file again
+    UploadFile = SPIFFS.open(filename, "w");  // Open the file for writing in SPIFFS (create it, if doesn't exist)
+  }
+  else if (uploadfile.status == UPLOAD_FILE_WRITE)
+  {
+    if (UploadFile) UploadFile.write(uploadfile.buf, uploadfile.currentSize); // Write the received bytes to the file
+  }
+  else if (uploadfile.status == UPLOAD_FILE_END)
+  {
+    if (UploadFile)         // If the file was successfully created
+    {
+      UploadFile.close();   // Close the file again
+      Serial.print(F("Upload Size: ")); Serial.println(uploadfile.totalSize);
+      webpage = "";
+      append_page_header();
+      webpage += F("<h3>File was successfully uploaded</h3>");
+      webpage += F("<h2>Uploaded File Name: "); webpage += uploadfile.filename + "</h2>";
+      webpage += F("<h2>File Size: "); webpage += file_size(uploadfile.totalSize) + "</h2><br>";
+      append_page_footer();
+      server_wifi.send(200, "text/html", webpage);
+      // OuvrirCalendrier();
+    }
+    else
+    {
+      ReportCouldNotCreateFile("upload");
+    }
+  }
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void SPIFFS_dir() {
+  if (SPIFFS_present) {
+    File root = SPIFFS.open("/");
+    if (root) {
+      root.rewindDirectory();
+      SendHTML_Header();
+      webpage += F("<h3 class='rcorners_m'>SPIFFS Contents</h3><br>");
+      webpage += F("<table align='center'>");
+      webpage += F("<tr><th>Name/Type</th><th style='width:20%'>Type File/Dir</th><th>File Size</th></tr>");
+      printDirectory("/", 0);
+      webpage += F("</table>");
+      SendHTML_Content();
+      root.close();
+    }
+    else
+    {
+      SendHTML_Header();
+      webpage += F("<h3>No Files Found</h3>");
+    }
+    append_page_footer();
+    SendHTML_Content();
+    SendHTML_Stop();   // Stop is needed because no content length was sent
+  } else ReportSPIFFSNotPresent();
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void printDirectory(const char * dirname, uint8_t levels) {
+  File root = SPIFFS.open(dirname);
+  if (!root) {
+    return;
+  }
+  if (!root.isDirectory()) {
+    return;
+  }
+  File file = root.openNextFile();
+  while (file) {
+    if (webpage.length() > 1000) {
+      SendHTML_Content();
+    }
+    if (file.isDirectory()) {
+      webpage += "<tr><td>" + String(file.isDirectory() ? "Dir" : "File") + "</td><td>" + String(file.name()) + "</td><td></td></tr>";
+      printDirectory(file.name(), levels - 1);
+    }
+    else
+    {
+      webpage += "<tr><td>" + String(file.name()) + "</td>";
+      webpage += "<td>" + String(file.isDirectory() ? "Dir" : "File") + "</td>";
+      webpage += "<td>" + file_size(file.size()) + "</td></tr>";
+    }
+    file = root.openNextFile();
+  }
+  file.close();
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void File_Delete() {
+  if (server_wifi.args() > 0 ) { // Arguments were received
+    if (server_wifi.hasArg("delete")) SPIFFS_file_delete(server_wifi.arg(0));
+  }
+  else SelectInput("Select a File to Delete", "delete", "delete");
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void SPIFFS_file_delete(String filename) { // Delete the file
+  if (SPIFFS_present) {
+    SendHTML_Header();
+    File dataFile = SPIFFS.open("/" + filename, "r"); // Now read data from SPIFFS Card
+    if (dataFile)
+    {
+      if (SPIFFS.remove("/" + filename)) {
+        Serial.println(F("File deleted successfully"));
+        webpage += "<h3>File '" + filename + "' has been erased</h3>";
+        webpage += F("<a href='/delete'>[Back]</a><br><br>");
+      }
+      else
+      {
+        webpage += F("<h3>File was not deleted - error</h3>");
+        webpage += F("<a href='delete'>[Back]</a><br><br>");
+      }
+    } else ReportFileNotPresent("delete");
+    append_page_footer();
+    SendHTML_Content();
+    SendHTML_Stop();
+  } else ReportSPIFFSNotPresent();
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void SendHTML_Header() {
+  server_wifi.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  server_wifi.sendHeader("Pragma", "no-cache");
+  server_wifi.sendHeader("Expires", "-1");
+  server_wifi.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server_wifi.send(200, "text/html", ""); // Empty content inhibits Content-length header so we have to close the socket ourselves.
+  append_page_header();
+  server_wifi.sendContent(webpage);
+  webpage = "";
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void SendHTML_Content() {
+  server_wifi.sendContent(webpage);
+  webpage = "";
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void SendHTML_Stop() {
+  server_wifi.sendContent("");
+  server_wifi.client().stop(); // Stop is needed because no content length was sent
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void SelectInput(String heading1, String command, String arg_calling_name) {
+  SendHTML_Header();
+  webpage += F("<h3>"); webpage += heading1 + "</h3>";
+  webpage += F("<FORM action='/"); webpage += command + "' method='post'>"; // Must match the calling argument e.g. '/chart' calls '/chart' after selection but with arguments!
+  webpage += F("<input type='text' name='"); webpage += arg_calling_name; webpage += F("' value=''><br>");
+  webpage += F("<type='submit' name='"); webpage += arg_calling_name; webpage += F("' value=''><br><br>");
+  webpage += F("<a href='/'>[Back]</a><br><br>");
+  append_page_footer();
+  SendHTML_Content();
+  SendHTML_Stop();
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void ReportSPIFFSNotPresent() {
+  SendHTML_Header();
+  webpage += F("<h3>No SPIFFS Card present</h3>");
+  webpage += F("<a href='/'>[Back]</a><br><br>");
+  append_page_footer();
+  SendHTML_Content();
+  SendHTML_Stop();
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void ReportFileNotPresent(String target) {
+  SendHTML_Header();
+  webpage += F("<h3>File does not exist</h3>");
+  webpage += F("<a href='/"); webpage += target + "'>[Back]</a><br><br>";
+  append_page_footer();
+  SendHTML_Content();
+  SendHTML_Stop();
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void ReportCouldNotCreateFile(String target) {
+  SendHTML_Header();
+  webpage += F("<h3>Could Not Create Uploaded File (write-protected?)</h3>");
+  webpage += F("<a href='/"); webpage += target + "'>[Back]</a><br><br>";
+  append_page_footer();
+  SendHTML_Content();
+  SendHTML_Stop();
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+String file_size(int bytes) {
+  String fsize = "";
+  if (bytes < 1024)                      fsize = String(bytes) + " B";
+  else if (bytes < (1024 * 1024))        fsize = String(bytes / 1024.0, 3) + " KB";
+  else if (bytes < (1024 * 1024 * 1024)) fsize = String(bytes / 1024.0 / 1024.0, 3) + " MB";
+  else                                   fsize = String(bytes / 1024.0 / 1024.0 / 1024.0, 3) + " GB";
+  return fsize;
+}
+//---------------------------------------------------------------------------
+void handleTime() { // getion temps restant page web
+  char time_str[9];
+  const uint32_t millis_in_day    = 1000 * 60 * 60 * 24;
+  const uint32_t millis_in_hour   = 1000 * 60 * 60;
+  const uint32_t millis_in_minute = 1000 * 60;
+
+  static unsigned long t0 = 0;
+  if (millis() - debut > config.timeoutWifi * 1000) debut = millis(); // securité evite t<0
+  t0 = debut + (config.timeoutWifi * 1000) - millis();
+  // Serial.print(debut),Serial.print("|"),Serial.println(t0);
+
+  uint8_t days     = t0 / (millis_in_day);
+  uint8_t hours    = (t0 - (days * millis_in_day)) / millis_in_hour;
+  uint8_t minutes  = (t0 - (days * millis_in_day) - (hours * millis_in_hour)) / millis_in_minute;
+  uint8_t secondes = (t0 - (days * millis_in_day) - ((hours * millis_in_hour)) / millis_in_minute) / 1000 % 60;
+  sprintf(time_str, "%02d:%02d:%02d", hours, minutes, secondes);
+  // Serial.println(time_str);
+  server_wifi.send(200, "text/plane", String(time_str)); //Send Time value only to client ajax request
+}
+//---------------------------------------------------------------------------
+void handleDateTime() { // getion Date et heure page web
+  char time_str[20];
+  sprintf(time_str, "%02d/%02d/%4d %02d:%02d:%02d", day(), month(), year(), hour(), minute(), second());
+  server_wifi.send(200, "text/plane", String(time_str)); //Send Time value only to client ajax request
+}
+//---------------------------------------------------------------------------
 void PrintEEPROM() {
   Serial.print(F("Version = "))                 , Serial.println(ver);
   Serial.print(F("ID = "))                      , Serial.println(config.Idchar);
@@ -839,6 +1462,7 @@ void PrintEEPROM() {
   Serial.print(F("Tempo rapide = "))            , Serial.println(config.trapide);
   Serial.print(F("Tempo lente = "))             , Serial.println(config.tlent);
   Serial.print(F("Vitesse mini = "))            , Serial.println(config.vtransition);
+  Serial.print(F("Time Out Wifi (s)= "))        , Serial.println(config.timeoutWifi);
 }
 //---------------------------------------------------------------------------
 float calc_dist(float Lat1, float Long1, float Lat2, float Long2) {
