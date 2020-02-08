@@ -9,7 +9,7 @@ ID
 TIMERLENT
 TIMERRAPIDE
 VITESSEMINI
-GPRSPARAM=apn:user:pass (case sensitive)
+GPRSDATA=apn:user:pass (case sensitive)
 POSITION
 WIFIOFF
 Wifi,ssid,pass (case sensitive)

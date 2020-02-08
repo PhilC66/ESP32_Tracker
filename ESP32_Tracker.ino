@@ -2,7 +2,7 @@
 /* Ph Corbel 31/01/2020 */
 /* ESP32+Sim808
   Compilation LOLIN D32,default,80MHz, ESP32 1.0.2 (1.0.4 bugg?)
-  Arduino IDE 1.8.10 : 955350 72%, 47000 14% sur PC
+  Arduino IDE 1.8.10 : 965318 73%, 47008 14% sur PC
   Arduino IDE 1.8.10 :  76%,  14% sur raspi
 
 
@@ -55,7 +55,7 @@ bool    SPIFFS_present = false;
 #define PinBattProc   35   // liaison interne carte Lolin32 adc
 
 const String soft = "ESP32_Tracker.ino.d32"; // nom du soft
-String ver        = "V0-0";
+String ver        = "V1-0";
 int    Magique    = 15;
 
 char filecalibration[11] = "/coeff.txt";    // fichier en SPIFFS contenant les data de calibration
@@ -68,8 +68,8 @@ int CoeffTension[4];          // Coeff calibration Tension
 int CoeffTensionDefaut = 7000;// Coefficient par defaut
 bool FlagReset = false;
 byte Accu = 0; // accumulateur vitesse
-float lat, lng, course, speed;
-
+float lat, lon, course, speed;
+long   VBatterieProc    = 0; // Tension Batterie Processeur
 String Sbidon 		= ""; // String texte temporaire
 String messagetest = "";
 String message = "";
@@ -176,18 +176,18 @@ void setup() {
   }
 
   Serial.print(F("Connecting to "));
-  Serial.println(config.apn);
+  Serial.print(config.apn);
   if (!modem.gprsConnect(config.apn, config.gprsUser, config.gprsPass)) {
     Serial.println(" fail");
     Alarm.delay(10000);
     return;
   }
-  Serial.print(F(". success"));
+  Serial.println(F(". success"));
   bool res = modem.isGprsConnected();
-  DBG("GPRS status:", res ? "connected" : "not connected");
+  // DBG("GPRS status:", res ? "connected" : "not connected");
 
-  String ccid = modem.getSimCCID();
-  Serial.println("CCID:" + ccid);
+  // String ccid = modem.getSimCCID();
+  // Serial.print("CCID:"),Serial.println(ccid);
 
   String imei = modem.getIMEI();
   Serial.println("IMEI:" + imei);
@@ -198,10 +198,7 @@ void setup() {
   IPAddress local = modem.localIP();
   Serial.println("Local IP:" + local.toString());
 
-  int csq = modem.getSignalQuality();
-  Alarm.delay(200);
-  Serial.println();
-  Serial.println("Signal quality:" + csq);
+  Serial.print("Signal quality:"), Serial.println(read_RSSI());
 
   mqttClient.setServer( server, 1883 ); // Set the MQTT broker details.
   //// mqttClient.setCallback( mqttSubscriptionCallback );   // Set the MQTT message handler function.
@@ -264,12 +261,9 @@ void setup() {
   Alarm.disable(send);
 }
 //---------------------------------------------------------------------------
-
 void loop() {
 
   recvOneChar();
-
-
 
   if (!mqttClient.connected()) {
     mqttConnect(); // Connect if MQTT client is not connected.
@@ -286,8 +280,6 @@ void once() {
   Serial.println("Premier lancement");
   Alarm.enable(send);
   senddata();
-
-
 }
 //---------------------------------------------------------------------------
 void senddata() {
@@ -296,11 +288,46 @@ void senddata() {
   }
 }
 //---------------------------------------------------------------------------
+void Acquisition() {
+
+  static float lastlon = 0;
+  static float lastlat = 0;
+  getGPSdata();
+  Serial.print("distance:"), Serial.println(calc_dist(lat, lon, lastlat, lastlon), 2);
+  lastlat = lat;
+  lastlon = lon;
+  gereCadence();
+
+  if (CoeffTension[0] == 0 || CoeffTension[1] == 0 || CoeffTension[2] == 0 || CoeffTension[3] == 0) {
+    OuvrirFichierCalibration(); // patch relecture des coeff perdu
+  }
+  VBatterieProc   = map(adc_mm[1] / nSample, 0, 4095, 0, CoeffTension[1]);
+  Serial.print("tension proc = "), Serial.print(VBatterieProc / 1000.0, 3), Serial.println("V");
+  int idx = modem.newMessageIndex(0); // verifie arrivée sms
+
+  if (idx > 0) {
+    Serial.print("sms recu:"), Serial.println(idx);
+    traite_sms(idx);
+  }
+  else if (idx == 0 && FlagReset) {
+    FlagReset = false;
+    ResetHard();				//	reset hard
+  }
+}
+//---------------------------------------------------------------------------
 void traite_sms(int index) {
   bool sms = true;
   String textesms;
   String SenderNum;
   String Sendername;
+
+  /* Variables pour mode calibration */
+  static int tensionmemo = 0;//	memorisation tension batterie lors de la calibration
+  int coef = 0; // coeff temporaire
+  static byte P = 0; // Pin entrée a utiliser pour calibration
+  static byte M = 0; // Mode calibration 1,2,3,4
+  static bool FlagCalibration = false;	// Calibration Tension en cours
+
   Serial.print("sms a traiter:"), Serial.println(index);
   if (index == 99) {
     sms = false;
@@ -312,7 +339,7 @@ void traite_sms(int index) {
     SenderNum = modem.getSenderID(index, false);
     Serial.print("sender: "), Serial.println(SenderNum);
     Sendername = modem.getSenderName(index, false);
-    Serial.print("sendername length: "), Serial.println(Sendername.length());
+    // Serial.print("sendername length: "), Serial.println(Sendername.length());
     Serial.print("sendername: "), Serial.println(Sendername);
   }
 
@@ -426,8 +453,39 @@ fin_tel:
       generationMessage();
       sendSMSReply(SenderNum, sms);
     }
-    else if (textesms.indexOf(F("SYS")) == 0) {					//	SYS? Etat Systeme
-      Serial.println("sys");
+    else if (textesms.indexOf(F("SYS")) == 0) { //	SYS? Etat Systeme
+      byte n = modem.getRegistrationStatus();
+      if (n == 5) {														// Operateur roaming
+        message += F("rmg, ");								// roaming
+        message += modem.getOperator() + fl;
+      }
+      else {
+        message += modem.getOperator() + fl;  // Operateur
+      }
+      message += read_RSSI() + fl;
+      message += "V SIM808 = ";
+      message	+= String(modem.getBattVoltage());
+      message += " mV, ";
+      message += String(modem.getBattPercent()) + "%" + fl;
+
+      if (getGPSdata()) {
+        message += "GPS OK" + fl;
+      } else {
+        message += "GPS KO" + fl;
+      }
+
+      if (modem.isGprsConnected()) {
+        message += "GPRS connected" + fl;
+      } else {
+        message += "GPRS KO" + fl;
+      }
+
+      message += ("Ver:") + String(ver) + fl;
+
+      message += F("Valim generale = ");
+      message += String(VBatterieProc) + "mV";
+
+
       sendSMSReply(SenderNum, sms);
     }
     else if (textesms.indexOf(F("TIMERLENT")) == 0) { //	Timer lent
@@ -477,7 +535,7 @@ fin_tel:
     }
     else if (textesms.indexOf(F("PARAM")) > 0) {
       /*
-      {"param":{"timerlent":600,"timerrapide":15,"vitessemini":2}}
+        {"param":{"timerlent":600,"timerrapide":15,"vitessemini":2}}
       */
       bool erreur = false;
       // Serial.print("position X:"),Serial.println(textesms.substring(7, 8));
@@ -486,10 +544,10 @@ fin_tel:
         // json en reception sans lumlut
         DynamicJsonDocument doc(104);
         DeserializationError err = deserializeJson(doc, textesms);
-        if(err){
+        if (err) {
           erreur = true;
         }
-        else{
+        else {
           // Serial.print(F("Deserialization succeeded"));
           JsonObject param = doc["PARAM"];
           config.tlent = param["TIMERLENT"];
@@ -498,10 +556,10 @@ fin_tel:
           sauvConfig();
         }
       }
-      else{
+      else {
         erreur = true;
       }
-      if(!erreur){
+      if (!erreur) {
         // calculer taille https://arduinojson.org/v6/assistant/
         DynamicJsonDocument doc(104);
         JsonObject param = doc.createNestedObject("param");
@@ -513,13 +571,13 @@ fin_tel:
         // serializeJson(doc, Serial);
         message += jsonbidon;
       }
-      else{
+      else {
         message += "erreur json";
       }
       message += fl;
       sendSMSReply(SenderNum, sms);
     }
-    else if (textesms.indexOf(F("GPRSPARAM")) == 0) {
+    else if (textesms.indexOf(F("GPRSDATA")) == 0) {
       // Parametre GPRS = APN:USER:PASS
       bool valid = false;
       if ((textesms.indexOf(char(61))) == 9) {
@@ -603,7 +661,7 @@ fin_tel:
         message += F("http://maps.google.fr/maps?f=q&hl=fr&q=");
         message += String(lat, 6);
         message += F(",");
-        message += String(lng, 6);
+        message += String(lon, 6);
         message += fl;
         message += F("Vitesse = ");
         message += String(speed, 1);
@@ -623,6 +681,104 @@ fin_tel:
       FlagReset = true;                            // reset prochaine boucle
       sendSMSReply(SenderNum, sms);
     }
+    else if (!sms && textesms.indexOf(F("CALIBRATION=")) == 0) {
+      /* Uniquement =.2 pour cette application */
+
+      /* 	Mode calibration mesure tension
+          Seulement en mode serie local
+          recoit message "CALIBRATION=.X"
+          entrer mode calibration
+          Selection de la tenssion à calibrer X
+          X = 1 TensionBatterie : PinBattSol : CoeffTension1
+          X = 2 VBatterieProc : PinBattProc : CoeffTension2
+          X = 3 VUSB : PinBattUSB : CoeffTension3
+          X = 4 Tension24 : Pin24V : CoeffTension4
+          effectue mesure tension avec CoeffTensionDefaut retourne et stock resultat
+          recoit message "CALIBRATION=1250" mesure réelle en V*100
+          calcul nouveau coeff = mesure reelle/resultat stocké * CoeffTensionDefaut
+          applique nouveau coeff
+          stock en EEPROM
+          sort du mode calibration
+
+          variables
+          FlagCalibration true cal en cours, false par defaut
+          Static P pin d'entrée
+          static int tensionmemo memorisation de la premiere tension mesurée en calibration
+          int CoeffTension = CoeffTensionDefaut 7000 par défaut
+      */
+      String Sbidon = textesms.substring(12, 16); // texte apres =
+      //Serial.print(F("Sbidon=")),Serial.print(Sbidon),Serial.print(char(44)),Serial.println(Sbidon.length());
+      long tension = 0;
+      if (Sbidon.substring(0, 1) == "." && Sbidon.length() > 1) { // debut mode cal
+        // if (Sbidon.substring(1, 2) == "1" ) {
+        // M = 1;
+        // P = PinBattSol;
+        // coef = CoeffTension[0];
+        // }
+        if (Sbidon.substring(1, 2) == "2" ) {
+          M = 2;
+          P = PinBattProc;
+          coef = CoeffTension[1];
+        }
+        // if (Sbidon.substring(1, 2) == "3" ) {
+        // M = 3;
+        // P = PinBattUSB;
+        // coef = CoeffTension[2];
+        // }
+        // if (Sbidon.substring(1, 2) == "4" ) {
+        // Allumage(); // Allumage
+        // for (int i = 0; i < 5 ; i++) {
+        // read_adc(PinBattSol, PinBattProc, PinBattUSB, Pin24V, PinLum); // lecture des adc
+        // Alarm.delay(100);
+        // }
+        // M = 4;
+        // P = Pin24V;
+        // coef = CoeffTension[3];
+        // }
+        Serial.print("mode = "), Serial.print(M), Serial.println(Sbidon.substring(1, 2));
+        FlagCalibration = true;
+
+        coef = CoeffTensionDefaut;
+        tension = map(moyenneAnalogique(P), 0, 4095, 0, coef);
+        // Serial.print("TensionBatterie = "),Serial.println(TensionBatterie);
+        tensionmemo = tension;
+      }
+      else if (FlagCalibration && Sbidon.substring(0, 4).toInt() > 0 && Sbidon.substring(0, 4).toInt() <= 8000) {
+        // si Calibration en cours et valeur entre 0 et 5000
+        Serial.println(Sbidon.substring(0, 4));
+        /* calcul nouveau coeff */
+        coef = Sbidon.substring(0, 4).toFloat() / float(tensionmemo) * CoeffTensionDefaut;
+        // Serial.print("Coeff Tension = "),Serial.println(coef);
+        tension = map(moyenneAnalogique(P), 0, 4095, 0, coef);
+        CoeffTension[M - 1] = coef;
+        FlagCalibration = false;
+        Recordcalib();														// sauvegarde en SPIFFS
+
+        // if (M == 4) {
+        // Extinction(); // eteindre
+        // }
+      }
+      else {
+        message += F("message non reconnu");
+        message += fl;
+        FlagCalibration = false;
+      }
+      message += F("Mode Calib Tension ");
+      message += String(M) + fl;
+      message += F("TensionMesuree = ");
+      message += tension;
+      message += fl;
+      message += F("Coeff Tension = ");
+      message += coef;
+      // if (M == 1) {
+      // message += fl;
+      // message += F("Batterie = ");
+      // message += String(BattPBpct(tension, 6));
+      // message += "%";
+      // }
+      message += fl;
+      sendSMSReply(SenderNum, sms);
+    }
     else {
       message += F("message non reconnu");
       sendSMSReply(SenderNum, sms);
@@ -635,28 +791,6 @@ fin_tel:
 sortir:
   if (sms) {
     EffaceSMS(index);
-  }
-}
-//---------------------------------------------------------------------------
-void Acquisition() {
-
-  static float lastlon = 0;
-  static float lastlat = 0;
-  getGPSdata();
-  Serial.print("distance:"), Serial.println(calc_dist(lat, lng, lastlat, lastlon), 2);
-  lastlat = lat;
-  lastlon = lng;
-  gereCadence();
-
-  int idx = modem.newMessageIndex(0); // verifie arrivée sms
-
-  if (idx > 0) {
-    Serial.print("sms recu:"), Serial.println(idx);
-    traite_sms(idx);
-  }
-  else if (idx == 0 && FlagReset) {
-    FlagReset = false;
-    ResetHard();				//	reset hard
   }
 }
 //---------------------------------------------------------------------------
@@ -697,14 +831,14 @@ bool getGPSdata() {
 
   int alt, vsat, usat;
   bool fix = false;
-  fix = modem.getGPS(&lat, &lng, &speed, &alt, &course, &vsat, &usat);
+  fix = modem.getGPS(&lat, &lon, &speed, &alt, &course, &vsat, &usat);
   if (!fix) return fix; // sortir si fix false
   // int year, month, day, hour, minute, second = 0;
   // modem.getGPSTime(&year, &month, &day, &hour, &minute, &second);
 
   DynamicJsonDocument JSONencoder (300);
   JSONencoder["lat"] = String(lat, 8);
-  JSONencoder["lng"] = String(lng, 8);
+  JSONencoder["lon"] = String(lon, 8);
   JSONencoder["spped"] = String(speed, 8);
   JSONencoder["alt"] = alt;
   JSONencoder["vsat"] = vsat;
@@ -732,7 +866,7 @@ bool getGPSdata() {
   sprintf(bidon, "%02d/%02d/%04d %02d:%02d:%02d", day(), month(), year(), hour(), minute(), second());
   // Serial.println(bidon);//17/01/2020 09:10:11
   char charlon[12];
-  sprintf(charlon, "%02.8lf", lng);
+  sprintf(charlon, "%02.8lf", lon);
   // Serial.println(charlon);
   char charlat[12];
   sprintf(charlat, "%02.8lf", lat);
@@ -895,8 +1029,9 @@ void generationMessage() {
     message += F("OK, ");
     // message += fl;// V2-15
   }
-  message += "100";//String(Battpct(TensionBatterie));
-  message += "%";
+  message += fl;
+  message += "Valim generale = ";
+  message += String(VBatterieProc) + "mV";
   message += fl;
 }
 //---------------------------------------------------------------------------
@@ -927,17 +1062,17 @@ void init_adc_mm(void) {
 }
 //---------------------------------------------------------------------------
 void adc_read() {
-  read_adc( PinBattProc   ); // lecture des adc
+  read_adc(PinBattProc); // lecture des adc
 }
 //---------------------------------------------------------------------------
-void read_adc(int pin1) {
+void read_adc(int pin2) {
   // http://www.f4grx.net/algo-comment-calculer-une-moyenne-glissante-sur-un-microcontroleur-a-faibles-ressources/
   static int plus_ancien = 0;
   //acquisition
   int sample[5];
   for (byte i = 0; i < 5; i++) {
-    if (i == 0)sample[i] = moyenneAnalogique(pin1);
-    // if (i == 1)sample[i] = moyenneAnalogique(pin2);
+    // if (i == 0)sample[i] = moyenneAnalogique(pin1);
+    if (i == 1)sample[i] = moyenneAnalogique(pin2);
     // if (i == 2)sample[i] = moyenneAnalogique(pin3);
     // if (i == 3)sample[i] = moyenneAnalogique(pin4);
     // if (i == 4)sample[i] = moyenneAnalogique(pin5);
@@ -1518,7 +1653,7 @@ void sendSMSReply(String num , boolean sms) { //char *cmd  String message
 bool MajHeure() {
   int alt, vsat, usat;
   bool fix = false;
-  fix = modem.getGPS(&lat, &lng, &speed, &alt, &course, &vsat, &usat);
+  fix = modem.getGPS(&lat, &lon, &speed, &alt, &course, &vsat, &usat);
   if (fix) {
     int yr, mnth, dy, hr, mn, sec = 0;
     modem.getGPSTime(&yr, &mnth, &dy, &hr, &mn, &sec);
@@ -1553,6 +1688,26 @@ String displayTime() {
   char bidon[20];
   sprintf(bidon, "%02d/%02d/%04d %02d:%02d:%02d", day(), month(), year(), hour(), minute(), second());
   return String(bidon);
+}
+//---------------------------------------------------------------------------
+String read_RSSI() {	// lire valeur RSSI et remplir message
+
+  String rssi = "";
+  int r;
+  byte n = modem.getSignalQuality();
+  // Serial.print(F("RSSI = ")); Serial.print(n); Serial.print(F(": "));
+  if (n == 0) r = -115;
+  if (n == 1) r = -111;
+  if (n == 31) r = -52;
+  if ((n >= 2) && (n <= 30)) {
+    r = map(n, 2, 30, -110, -54);
+  }
+  rssi  = F("RSSI= ");
+  rssi += String(n);
+  rssi += ", ";
+  rssi += String(r);
+  rssi += F("dBm");
+  return rssi;
 }
 /* --------------------  test local serial seulement ----------------------*/
 void recvOneChar() {
