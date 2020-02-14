@@ -14,4 +14,6 @@ POSITION
 WIFIOFF
 Wifi,ssid,pass (case sensitive)
 TIMEOUTWIFI
+MQTTDATA Parametres MQTTDATA=Serveur:User:Pass:Topic:port, case sensitive pas de : / # space dans user et pass
+GPRSDATA
 

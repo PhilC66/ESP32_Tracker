@@ -2,13 +2,14 @@
 /* Ph Corbel 31/01/2020 */
 /* ESP32+Sim808
   Compilation LOLIN D32,default,80MHz, ESP32 1.0.2 (1.0.4 bugg?)
-  Arduino IDE 1.8.10 : 966722 73%, 46880 14% sur PC
+  Arduino IDE 1.8.10 : 969398 73%, 46912 14% sur PC
   Arduino IDE 1.8.10 :  76%,  14% sur raspi
 
 
 */
 
 /* TinyGsmClient.h
+  modification PhC
   https://github.com/vkc2019/gps-tracker-sim808-esp32
   gestion SMS et PhoneBook
   https://github.com/szotsaki/TinyGSM/blob/master/src/TinyGsmClientSIM800.h
@@ -18,11 +19,11 @@
 
 #include <ArduinoJson.h>
 #include <TinyGsmClient.h>
-#include <PubSubClient.h>
+#include <PubSubClient.h>          // modifié define MQTT_MAX_PACKET_SIZE 164
 #include <WiFi.h>
 #include <Time.h>
 #include <TimeAlarms.h>
-#include <sys/time.h>             //<sys/time.h>
+#include <sys/time.h>
 #include <EEPROM.h>               // variable en EEPROM
 #include <SPIFFS.h>
 #include <ArduinoOTA.h>
@@ -55,7 +56,7 @@ bool    SPIFFS_present = false;
 
 const String soft = "ESP32_Tracker.ino.d32"; // nom du soft
 String ver        = "V1-0";
-int    Magique    = 11;
+int    Magique    = 12;
 
 char filecalibration[11] = "/coeff.txt";    // fichier en SPIFFS contenant les data de calibration
 #define nSample (1<<4)    // nSample est une puissance de 2, ici 16 (4bits)
@@ -116,6 +117,7 @@ Ticker ADC;                // Lecture des Adc
 //---------------------------------------------------------------------------
 
 void setup() {
+  setCpuFrequencyMhz(80);// a la place de 240MHz par defaut
   Serial.begin(115200);
   SerialAT.begin(9600, SERIAL_8N1, RXD2, TXD2, false);
   Alarm.delay(1000);
@@ -297,7 +299,6 @@ void once() {
 //---------------------------------------------------------------------------
 void senddata() {
   if (getGPSdata()) {
-    // mqttPublishThingspeak( writeTopic, writeAPIKey, dataToPublish, fieldsToPublish );
     mqttPublish(config.writeTopic, dataToPublish, fieldsToPublish);
   }
 }
@@ -348,7 +349,7 @@ void traite_sms(int index) {
     textesms = messagetest;
   } else {
     Serial.print("newmessageindex: "), Serial.println(index);
-    textesms = modem.readSMS(index);    
+    textesms = modem.readSMS(index);
     SenderNum = modem.getSenderID(index, false);
     Serial.print("sender: "), Serial.println(SenderNum);
     Sendername = modem.getSenderName(index, false);
@@ -364,7 +365,8 @@ void traite_sms(int index) {
   if ((sms && Sendername.length() > 0) || !sms) { // emetteur reconnu dans Phone Book
     messageId();
     if (!(textesms.indexOf(F("TEL")) == 0 || textesms.indexOf(F("tel")) == 0 || textesms.indexOf(F("Tel")) == 0
-          || textesms.indexOf(F("Wifi")) == 0 || textesms.indexOf(F("GPRSDATA")) == 0 || textesms.indexOf(F("MQTTDATA")) == 0)) {
+          || textesms.indexOf(F("Wifi")) == 0 || textesms.indexOf(F("GPRSDATA")) > -1 || textesms.indexOf(F("gprsdata")) > -1
+          || textesms.indexOf(F("MQTTDATA")) > -1 || textesms.indexOf(F("mqttdata")) > -1)) {
       textesms.toUpperCase();    // passe tout en Maj sauf si "TEL"
       textesms.replace(" ", ""); // supp tous les espaces
     }
@@ -589,92 +591,157 @@ fin_tel:
       message += fl;
       sendSMSReply(SenderNum, sms);
     }
-    else if (textesms.indexOf(F("MQTTDATA")) == 0) {
-      // Parametres MQTTDATA=Serveur:User:Pass:Topic
+    else if (textesms.indexOf("MQTTDATA") > -1) {
+      // Parametres MQTTDATA=Serveur:User:Pass:Topic:port
       // MQTTDATA=philippeco.hopto.org:TpcfUser:hU4zHox1iHCDHM2:localisation:1883
-      bool valid = false;
-      if ((textesms.indexOf(char(61))) == 8) {
+      // {"MQTTDATA":{"serveur":"philippeco.hopto.org","user":"TpcfUser","pass":"hU4zHox1iHCDHM2","topic":"localisation","port":1883}}
+      bool erreur = false;
+      bool formatsms = false;
+      if (textesms.indexOf(":") == 11) { // format json
+        DynamicJsonDocument doc(210); //https://arduinojson.org/v6/assistant/
+        DeserializationError err = deserializeJson(doc, textesms);
+        if (err) {
+          erreur = true;
+        }
+        else {
+          JsonObject mqttdata = doc["MQTTDATA"];
+          config.mqttServer   < mqttdata["serveur"];
+          config.mqttUserName < mqttdata["user"];
+          config.mqttPass     < mqttdata["pass"];
+          config.writeTopic   < mqttdata["topic"];
+          config.mqttPort     = mqttdata["port"];
+          sauvConfig();													// sauvegarde en EEPROM
+        }
+      }
+      else if ((textesms.indexOf(char(61))) == 8) { // format sms
+        formatsms = true;
         byte w = textesms.indexOf(":");
         byte x = textesms.indexOf(":", w + 1);
         byte y = textesms.indexOf(":", x + 1);
         byte z = textesms.indexOf(":", y + 1);
         byte zz = textesms.length();
         // Serial.printf("%d:%d:%d:%d\n",w,x,y,z);
-        Serial.printf("%d:%d:%d:%d:%d\n",w-9,x-w-1,y-x-1,z-y-1,zz-z-1);
-        if(textesms.substring(z+1, zz).toInt() > 0){// Port > 0
-          if((w-9)<25 && (x-w-1)<11 && (y-x-1)<16 && (z-y-1)<16){
-            String sserveur = textesms.substring(9, w);
-            String suser = textesms.substring(w+1, x);
-            String spass = textesms.substring(x+1, y);
-            String stopic = textesms.substring(y+1, z);
-            Serial.print("server:"),Serial.println(sserveur);
-            Serial.print("user:"),Serial.println(suser);
-            Serial.print("pass:"),Serial.println(spass);
-            Serial.print("topic:"),Serial.println(stopic);
-            Serial.print("port:"),Serial.println(textesms.substring(z+1, zz).toInt());
-            sserveur.toCharArray(config.mqttServer,(sserveur.length()+1));
-            suser.toCharArray(config.mqttUserName,(suser.length()+1));
-            spass.toCharArray(config.mqttPass,(spass.length()+1));
-            stopic.toCharArray(config.writeTopic,(stopic.length()+1));
-            config.mqttPort = textesms.substring(z+1, zz).toInt();
-            valid = true;
+        // Serial.printf("%d:%d:%d:%d:%d\n",w-9,x-w-1,y-x-1,z-y-1,zz-z-1);
+        if (textesms.substring(z + 1, zz).toInt() > 0) { // Port > 0
+          if ((w - 9) < 25 && (x - w - 1) < 11 && (y - x - 1) < 16 && (z - y - 1) < 16) {
+            Sbidon = textesms.substring(9, w);
+            Sbidon.toCharArray(config.mqttServer, (Sbidon.length() + 1));
+            Sbidon = textesms.substring(w + 1, x);
+            Sbidon.toCharArray(config.mqttUserName, (Sbidon.length() + 1));
+            Sbidon = textesms.substring(x + 1, y);
+            Sbidon.toCharArray(config.mqttPass, (Sbidon.length() + 1));
+            Sbidon = textesms.substring(y + 1, z);
+            Sbidon.toCharArray(config.writeTopic, (Sbidon.length() + 1));
+            config.mqttPort = textesms.substring(z + 1, zz).toInt();
+            sauvConfig();													// sauvegarde en EEPROM
           }
+          else {
+            erreur = true;
+          }
+        } else {
+          erreur = true;
         }
-        if (valid) {
-          sauvConfig();													// sauvegarde en EEPROM
+      }
+      if (!erreur) {
+        if (formatsms) {
           message += "Sera pris en compte au prochain demarrage\nOu envoyer RST maintenant";
           message += fl;
-        } else {
-          message += "Erreur format";
+          message += F("Parametres MQTT :");
+          message += fl;
+          message += "Serveur:" + String(config.mqttServer) + fl;
+          message += "User:" + String(config.mqttUserName) + fl;
+          message += "Pass:" + String(config.mqttPass) + fl;
+          message += "Topic:" + String(config.writeTopic) + fl;
+          message += "Port:" + String(config.mqttPort) + fl;
+        }
+        else {
+          DynamicJsonDocument doc(210);
+          JsonObject MQTTDATA = doc.createNestedObject("MQTTDATA");
+          MQTTDATA["serveur"] = config.mqttServer;
+          MQTTDATA["user"]    = config.mqttUserName;
+          MQTTDATA["pass"]    = config.mqttPass;
+          MQTTDATA["topic"]   = config.writeTopic;
+          MQTTDATA["port"]    = config.mqttPort;
+          Sbidon = "";
+          serializeJson(doc, Sbidon);
+          message += Sbidon;
           message += fl;
         }
       }
-      message += F("Parametres MQTT :");
-      message += fl;
-      message += "Serveur:"+String(config.mqttServer)+fl;
-      message += "User:"+String(config.mqttUserName)+fl;
-      message += "Pass:"+String(config.mqttPass)+fl;
-      message += "Topic:"+String(config.writeTopic)+fl;
-      message += "Port:"+String(config.mqttPort)+fl;
+      else {
+        message += "Erreur format";
+        message += fl;
+      }
       sendSMSReply(SenderNum, sms);
     }
     else if (textesms.indexOf(F("GPRSDATA")) == 0) {
       // Parametres GPRSDATA = APN:USER:PASS
-      bool valid = false;
-      if ((textesms.indexOf(char(61))) == 8) {
+      // GPRSDATA=sl2sfr::
+      // {"GPRSDATA":{"apn":"sl2sfr","user":"","pass":""}}
+      bool erreur = false;
+      bool formatsms = false;
+      if (textesms.indexOf(":") == 11) { // format json
+        DynamicJsonDocument doc(120);
+        DeserializationError err = deserializeJson(doc, textesms);
+        if (err) {
+          erreur = true;
+        }
+        else {
+          JsonObject gprsdata = doc["GPRSDATA"];
+          config.apn      < gprsdata["apn"];
+          config.gprsUser < gprsdata["user"];
+          config.gprsPass < gprsdata["pass"];
+          sauvConfig();													// sauvegarde en EEPROM
+        }
+      }
+      else if ((textesms.indexOf(char(61))) == 8) { // format sms
+        formatsms = true;
         byte x = textesms.indexOf(":");
         byte y = textesms.indexOf(":", x + 1);
         byte z = textesms.length();
-        Serial.printf("%d:%d:%d\n",x-9,y-x-1,z-y-1);
-        if ((x-9)<11 && (y-x-1)<11 && (z-y-1)<11) {
-          String sapn = textesms.substring(9, x);
-          String suser = textesms.substring(x + 1, y);
-          String spass = textesms.substring(y + 1, z);
-          Serial.println(sapn);
-          Serial.println(suser);
-          Serial.println(spass);
-          sapn.toCharArray(config.apn, (sapn.length() + 1));
-          suser.toCharArray(config.gprsUser, (suser.length() + 1));
-          spass.toCharArray(config.gprsPass, (spass.length() + 1));
-          valid = true;
-        }
-        if (valid) {
+        Serial.printf("%d:%d:%d\n", x - 9, y - x - 1, z - y - 1);
+        if ((x - 9) < 11 && (y - x - 1) < 11 && (z - y - 1) < 11) {
+          Sbidon = textesms.substring(9, x);
+          Sbidon.toCharArray(config.apn, (Sbidon.length() + 1));
+          Sbidon = textesms.substring(x + 1, y);
+          Sbidon.toCharArray(config.gprsUser, (Sbidon.length() + 1));
+          Sbidon = textesms.substring(y + 1, z);
+          Sbidon.toCharArray(config.gprsPass, (Sbidon.length() + 1));
           sauvConfig();													// sauvegarde en EEPROM
+        }
+        else {
+          erreur = true;
+        }
+      }
+      if (!erreur) {
+        if (formatsms) {
           message += "Sera pris en compte au prochain demarrage\nOu envoyer RST maintenant";
           message += fl;
-        } else {
-          message += "Erreur format";
+          message += F("Parametres GPRS APN:USER:PASS =");
+          message += fl;
+          message += String(config.apn);
+          message += ":";
+          message += String(config.gprsUser);
+          message += ":";
+          message += String(config.gprsPass);
+          message += fl;
+        }
+        else {
+          DynamicJsonDocument doc(120);
+          JsonObject gprsdata = doc.createNestedObject("GPRSDATA");
+          gprsdata["apn"]  = config.apn;
+          gprsdata["user"] = config.gprsUser;
+          gprsdata["pass"] = config.gprsPass;
+          Sbidon = "";
+          serializeJson(doc, Sbidon);
+          message += Sbidon;
           message += fl;
         }
       }
-      message += F("Parametres GPRS APN:USER:PASS =");
-      message += fl;
-      message += String(config.apn);
-      message += ":";
-      message += String(config.gprsUser);
-      message += ":";
-      message += String(config.gprsPass);
-      message += fl;
+      else {
+        message += "Erreur format";
+        message += fl;
+      }
       sendSMSReply(SenderNum, sms);
     }
     else if (textesms.indexOf(F("IMEI")) > -1) {
@@ -697,15 +764,14 @@ fin_tel:
       sendSMSReply(SenderNum, sms);
     }
     else if (textesms.indexOf(F("Wifi")) == 0) { // demande connexion Wifi
-      byte pos1 = textesms.indexOf(char(44));//","
-      byte pos2 = textesms.indexOf(char(44), pos1 + 1);
-      String ssids = textesms.substring(pos1 + 1, pos2);
-      String pwds  = textesms.substring(pos2 + 1, textesms.length());
       char ssid[20];
       char pwd[20];
-      ssids.toCharArray(ssid, ssids.length() + 1);
-      ssids.toCharArray(ssid, ssids.length() + 1);
-      pwds.toCharArray(pwd, pwds.length() + 1);
+      byte pos1 = textesms.indexOf(char(44));//","
+      byte pos2 = textesms.indexOf(char(44), pos1 + 1);
+      Sbidon = textesms.substring(pos1 + 1, pos2);
+      Sbidon.toCharArray(ssid, Sbidon.length() + 1);
+      Sbidon  = textesms.substring(pos2 + 1, textesms.length());
+      Sbidon.toCharArray(pwd, Sbidon.length() + 1);
       Serial.print("ssid:"), Serial.println(ssid);
       ConnexionWifi(ssid, pwd, SenderNum, sms, index); // sms reponse sera généré par routine
     }
@@ -894,10 +960,6 @@ bool getGPSdata() {
   bool fix = false;
   fix = modem.getGPS(&lat, &lon, &speed, &alt, &course, &vsat, &usat);
   if (!fix) return fix; // sortir si fix false
-  // int year, month, day, hour, minute, second = 0;
-  // modem.getGPSTime(&year, &month, &day, &hour, &minute, &second);
-
-
 
   fieldsToPublish[0] = config.writeTopic;//"localisation";//"date";
   // fieldsToPublish[1] = "2";//"id";
@@ -909,46 +971,21 @@ bool getGPSdata() {
   // pour test
   char bidon[20];
   sprintf(bidon, "%04d-%02d-%02d %02d:%02d:%02d", year(), month(), day(), hour(), minute(), second());
-  // Serial.println(bidon);//17/01/2020 09:10:11
-  char charlon[12];
-  sprintf(charlon, "%02.8lf", lon);
-  // Serial.println(charlon);
-  char charlat[12];
-  sprintf(charlat, "%02.8lf", lat);
-  // Serial.println(charlat);
-  char charspeed[6];
-  sprintf(charspeed, "%02.2lf", speed);
-  // Serial.println(charspeed);
-  char charcourse[7];
-  sprintf(charcourse, "%03.2lf", course);
-  // Serial.println(charcourse);
-
-  // dataToPublish[0] = bidon;
-  // dataToPublish[1] = Id;
-  // dataToPublish[2] = charlat;
-  // dataToPublish[3] = charlon;
-  // dataToPublish[4] = charspeed;
-  // dataToPublish[5] = charcourse;
-
   // {"Id":"BB63000","date_tx_sms":"2020-02-10 15:15:15","lat":42.123456,"lon":2.123456,"speed":25.2,"course":180}
-  // JsonDoc.printTo(JSONmessageBuffer, sizeof(JSONmessageBuffer));
 
   DynamicJsonDocument JsonDoc (200);
   JsonDoc["Id"] = config.Idchar;
   JsonDoc["date_tx_sms"] = bidon;
   JsonDoc["lat"] = String(lat, 8);
   JsonDoc["lon"] = String(lon, 8);
-  // JsonDoc["speed"] = String(speed, 1);
-  // JsonDoc["course"] = String(course,0);
+  JsonDoc["speed"] = String(speed, 1);
+  JsonDoc["course"] = String(course, 0);
 
   char JSONmessageBuffer[200];
   serializeJson(JsonDoc, JSONmessageBuffer);
   // serializeJson(JsonDoc, Serial);
 
   dataToPublish[0] = JSONmessageBuffer;
-  // Serial.println(JSONmessageBuffer);
-
-  // mqtt.publish(pub_topic, JSONmessageBuffer);
   return fix;
 }
 
@@ -994,25 +1031,6 @@ void mqttConnect() {
   }
 }
 //---------------------------------------------------------------------------
-// void getID(char clientID[], int idLength) {
-//8) Use getID to generate a random client ID for connection to the MQTT server.
-
-// /*
-// Build a random client ID.
-// clientID - Character array for output
-// idLength - Length of clientID (actual length is one character longer for NULL)
-// */
-// static const char alphanum[] = "0123456789"
-// "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-// "abcdefghijklmnopqrstuvwxyz"; // For random generation of the client ID.
-
-
-// for (int i = 0; i < idLength ; i++) { // Generate client ID.
-// clientID[ i ] = alphanum[ random( 51 ) ];
-// }
-// clientID[ idLength ] = '\0';
-// }
-//---------------------------------------------------------------------------
 int mqttSubscribe( long subChannelID, int field, char* readKey, int unsubSub ) {
   // 9) Use mqttSubscribe to receive updates from the LED control field. In this example, you subscribe to a field, but you can also use this function to subscribe to the whole channel feed. Call the function with field = 0 to subscribe to the whole feed.
 
@@ -1056,32 +1074,6 @@ void mqttPublish(char* pubChannelID, String dataArray[], String fieldArray[]) {
 
   bool rep = mqttClient.publish(pubChannelID, dataString.c_str());
   Serial.print("publication :"), Serial.println(rep);
-}
-//---------------------------------------------------------------------------
-void mqttPublishThingspeak(long pubChannelID, char* pubWriteAPIKey, String dataArray[], String fieldArray[]) {
-  // 11) Use the mqttPublish function to send your Wi-Fi RSSI data to a ThingSpeak channel.
-
-  /**
-     Publish to a channel
-       pubChannelID - Channel to publish to.
-       pubWriteAPIKey - Write API key for the channel to publish to.
-       dataArray - Binary array indicating which fields to publish to, starting with field 1.
-       fieldArray - Array of values to publish, starting with field 1.
-  */
-
-  int idxdata = 0;
-  String dataString = "";
-  while (idxdata < nbrdata) {
-    dataString += "&" + fieldArray[idxdata] + "=" + String(dataArray[idxdata]);
-    idxdata++;
-  }
-
-  Serial.println( dataString );
-
-  // Create a topic string and publish data to ThingSpeak channel feed.
-  String topicString = "channels/" + String( pubChannelID ) + "/publish/" + String( pubWriteAPIKey );
-  mqttClient.publish(topicString.c_str(), dataString.c_str());
-  Serial.println("Published to channel " + String(pubChannelID));
 }
 //---------------------------------------------------------------------------
 void generationMessage() {
