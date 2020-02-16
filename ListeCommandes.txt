@@ -9,11 +9,11 @@ ID
 TIMERLENT
 TIMERRAPIDE
 VITESSEMINI
-GPRSDATA=apn:user:pass (case sensitive)
+GPRSDATA="apn":"user":"pass" (case sensitive)
 POSITION
 WIFIOFF
 Wifi,ssid,pass (case sensitive)
 TIMEOUTWIFI
 MQTTDATA Parametres MQTTDATA=Serveur:User:Pass:Topic:port, case sensitive pas de : / # space dans user et pass
-GPRSDATA
+
 

@@ -2,9 +2,12 @@
 /* Ph Corbel 31/01/2020 */
 /* ESP32+Sim808
   Compilation LOLIN D32,default,80MHz, ESP32 1.0.2 (1.0.4 bugg?)
-  Arduino IDE 1.8.10 : 969398 73%, 46912 14% sur PC
+  Arduino IDE 1.8.10 : 970558 74%, 46928 14% sur PC
   Arduino IDE 1.8.10 :  76%,  14% sur raspi
+*/
 
+/* A faire
+  sms majsoft par GPRS
 
 */
 
@@ -53,10 +56,11 @@ bool    SPIFFS_present = false;
 #define RESET_PIN     18   // Rest Sim 808
 #define PinReset      13   // Reset Hard
 #define PinBattProc   35   // liaison interne carte Lolin32 adc
+#define PinAlim       26   //
 
 const String soft = "ESP32_Tracker.ino.d32"; // nom du soft
 String ver        = "V1-0";
-int    Magique    = 12;
+int    Magique    = 10;
 
 char filecalibration[11] = "/coeff.txt";    // fichier en SPIFFS contenant les data de calibration
 #define nSample (1<<4)    // nSample est une puissance de 2, ici 16 (4bits)
@@ -70,12 +74,23 @@ bool FlagReset = false;
 byte Accu = 0; // accumulateur vitesse
 float lat, lon, course, speed;
 long   VBatterieProc    = 0; // Tension Batterie Processeur
+long   VAlim            = 0; // Tension Alimentation
 String Sbidon 		= ""; // String texte temporaire
 String messagetest = "";
 String message = "";
 String fl = "\n";                   //  saut de ligne SMS
 String Id ;                         //  Id du materiel sera lu dans EEPROM
 byte confign = 0;                   //  position enregistrement config EEPROM
+
+bool FlagAlarmeTension     = false;
+bool FlagAlarmeGprs        = false;
+bool FlagAlarmeMQTT        = false;
+bool FlagAlarmeGps         = false;
+
+bool FlagLastAlarmeTension = false;
+bool FlagLastAlarmeGprs    = false;
+bool FlagLastAlarmeMQTT    = false;
+bool FlagLastAlarmeGps     = false;
 
 TinyGsm modem(SerialAT);
 TinyGsmClient client(modem);
@@ -117,10 +132,10 @@ Ticker ADC;                // Lecture des Adc
 //---------------------------------------------------------------------------
 
 void setup() {
-  setCpuFrequencyMhz(80);// a la place de 240MHz par defaut
+  setCpuFrequencyMhz(80);// 30mA, a la place de 240MHz 65mA par defaut
   Serial.begin(115200);
   SerialAT.begin(9600, SERIAL_8N1, RXD2, TXD2, false);
-  Alarm.delay(1000);
+  Alarm.delay(100);//1000
 
   init_adc_mm();// initialisation tableau pour adc Moyenne Mobile
   ADC.attach_ms(100, adc_read); // lecture des adc toute les 100ms
@@ -192,12 +207,13 @@ void setup() {
 
   Serial.print(F("Connecting to "));
   Serial.print(config.apn);
-  if (!modem.gprsConnect(config.apn, config.gprsUser, config.gprsPass)) {
-    Serial.println(" fail");
-    Alarm.delay(10000);
-    return;
+  if (modem.gprsConnect(config.apn, config.gprsUser, config.gprsPass)) {
+    Serial.println(F(". success"));
   }
-  Serial.println(F(". success"));
+  else {
+    Serial.println(" fail");
+  }
+
   bool res = modem.isGprsConnected();
   // DBG("GPRS status:", res ? "connected" : "not connected");
 
@@ -218,9 +234,12 @@ void setup() {
   mqttClient.setServer(config.mqttServer, config.mqttPort); // Set the MQTT broker details.
   //// mqttClient.setCallback( mqttSubscriptionCallback );   // Set the MQTT message handler function.
 
+  int cpt = 0;
   while (!MajHeure()) {
     Serial.print(".");
     Alarm.delay(500);
+    cpt ++;
+    if (cpt > 240) break; // sortir apres 2mn
   }
   Serial.println();
 
@@ -316,8 +335,7 @@ void Acquisition() {
   if (CoeffTension[0] == 0 || CoeffTension[1] == 0 || CoeffTension[2] == 0 || CoeffTension[3] == 0) {
     OuvrirFichierCalibration(); // patch relecture des coeff perdu
   }
-  VBatterieProc   = map(adc_mm[1] / nSample, 0, 4095, 0, CoeffTension[1]);
-  Serial.print("tension proc = "), Serial.print(VBatterieProc / 1000.0, 3), Serial.println("V");
+
   int idx = modem.newMessageIndex(0); // verifie arrivée sms
 
   if (idx > 0) {
@@ -328,6 +346,100 @@ void Acquisition() {
     FlagReset = false;
     ResetHard();				//	reset hard
   }
+
+  VAlim         = map(adc_mm[0] / nSample, 0, 4095, 0, CoeffTension[0]);
+  VBatterieProc = map(adc_mm[1] / nSample, 0, 4095, 0, CoeffTension[1]);
+  Serial.print("tension proc = "), Serial.print(VBatterieProc / 1000.0, 3), Serial.println("V");
+  Serial.print("tension alim = "), Serial.print(VAlim / 1000.0, 3), Serial.println("V");
+
+  static byte nalaAlim = 0;
+  static byte nRetourTension = 0;
+  if (VAlim < 3500) {
+    if (nalaAlim ++ == 10) {
+      FlagAlarmeTension = true;
+      nalaAlim = 0;
+    }
+  }
+  else if (VAlim > 4000) {
+    nRetourTension ++;
+    if (nRetourTension == 4) {
+      FlagAlarmeTension = false;
+      nRetourTension = 0;
+    }
+  }
+  else {
+    if (nalaAlim > 0)nalaAlim --;
+  }
+
+  static byte nalaGprs = 0;
+  if (!modem.isGprsConnected()) {
+    modem.gprsConnect(config.apn, config.gprsUser, config.gprsPass);
+    if (nalaGprs ++ == 10) {
+      FlagAlarmeGprs = true;
+      nalaGprs = 0;
+    }
+  } else {
+    if (nalaGprs > 0) nalaGprs --;
+  }
+  static byte nalaMQTT = 0;
+  if (!mqttClient.connected()) {
+    if (nalaMQTT ++ == 10) {
+      FlagAlarmeMQTT = true;
+      nalaMQTT = 0;
+    }
+  } else {
+    if (nalaMQTT > 0) nalaMQTT --;
+  }
+  static byte nalaGps = 0;
+  if (!getGPSdata()) {
+    if (nalaGps ++ == 10) {
+      FlagAlarmeGps = true;
+      nalaGps = 0;
+    }
+  } else {
+    if (nalaGps > 0) nalaGps --;
+  }
+  envoie_alarme();
+
+}
+//---------------------------------------------------------------------------
+void envoie_alarme() {
+  /* determine si un SMS appartition/disparition Alarme doit etre envoyé */
+  bool SendEtat = false;
+
+  if (FlagAlarmeTension != FlagLastAlarmeTension) {
+    SendEtat = true;
+    FlagLastAlarmeTension = FlagAlarmeTension;
+  }
+  if (FlagAlarmeGprs != FlagLastAlarmeGprs) {
+    SendEtat = true;
+    FlagLastAlarmeGprs = FlagAlarmeGprs;
+  }
+  if (FlagAlarmeMQTT != FlagLastAlarmeMQTT) {
+    SendEtat = true;
+    FlagLastAlarmeMQTT = FlagAlarmeMQTT;
+  }
+  if (FlagAlarmeGps != FlagLastAlarmeGps) {
+    SendEtat = true;
+    FlagLastAlarmeGps = FlagAlarmeGps;
+  }
+  if (SendEtat) { 							// si envoie Etat demandé
+    envoieGroupeSMS(0);					// envoie groupé
+    SendEtat = false;						// efface demande
+  }
+}
+//---------------------------------------------------------------------------
+void envoieGroupeSMS(byte grp) {
+  byte nligne = modem.ListPhonebook(1, 10);
+  generationMessage();
+  for (int idx = 1; idx < nligne + 1; idx++) {
+    if (!modem.sendSMS(modem.readPhonebookEntry(idx).number, message)) {
+      Serial.println(F("Envoi SMS Failed"));
+    } else {
+      Serial.println(F("SMS Sent OK"));
+    }
+  }
+  Serial.println(message);
 }
 //---------------------------------------------------------------------------
 void traite_sms(int index) {
@@ -367,7 +479,7 @@ void traite_sms(int index) {
     if (!(textesms.indexOf(F("TEL")) == 0 || textesms.indexOf(F("tel")) == 0 || textesms.indexOf(F("Tel")) == 0
           || textesms.indexOf(F("Wifi")) == 0 || textesms.indexOf(F("GPRSDATA")) > -1 || textesms.indexOf(F("gprsdata")) > -1
           || textesms.indexOf(F("MQTTDATA")) > -1 || textesms.indexOf(F("mqttdata")) > -1)) {
-      textesms.toUpperCase();    // passe tout en Maj sauf si "TEL"
+      textesms.toUpperCase();    // passe tout en Maj sauf si ci dessus
       textesms.replace(" ", ""); // supp tous les espaces
     }
 
@@ -454,7 +566,7 @@ fin_tel:
       }
     }
     else if (textesms.indexOf("LST") == 0) {	//	Liste des Num Tel
-      int nligne = modem.ListPhonebook(1, 10);
+      byte nligne = modem.ListPhonebook(1, 10);
       for (int idx = 1; idx < nligne + 1; idx ++) {
         message += String(idx) + ":";
         message += modem.readPhonebookEntry(idx).number;
@@ -482,18 +594,6 @@ fin_tel:
       message	+= String(modem.getBattVoltage());
       message += " mV, ";
       message += String(modem.getBattPercent()) + "%" + fl;
-
-      if (getGPSdata()) {
-        message += "GPS OK" + fl;
-      } else {
-        message += "GPS KO" + fl;
-      }
-
-      if (modem.isGprsConnected()) {
-        message += "GPRS connected" + fl;
-      } else {
-        message += "GPRS KO" + fl;
-      }
 
       message += ("Ver:") + String(ver) + fl;
 
@@ -605,11 +705,11 @@ fin_tel:
         }
         else {
           JsonObject mqttdata = doc["MQTTDATA"];
-          config.mqttServer   < mqttdata["serveur"];
-          config.mqttUserName < mqttdata["user"];
-          config.mqttPass     < mqttdata["pass"];
-          config.writeTopic   < mqttdata["topic"];
-          config.mqttPort     = mqttdata["port"];
+          strncpy(config.mqttServer,   mqttdata["serveur"], 26);
+          strncpy(config.mqttUserName, mqttdata["user"],    11);
+          strncpy(config.mqttPass,     mqttdata["pass"],    16);
+          strncpy(config.writeTopic,   mqttdata["topic"],   16);
+          config.mqttPort            = mqttdata["port"];
           sauvConfig();													// sauvegarde en EEPROM
         }
       }
@@ -649,10 +749,10 @@ fin_tel:
           message += F("Parametres MQTT :");
           message += fl;
           message += "Serveur:" + String(config.mqttServer) + fl;
-          message += "User:" + String(config.mqttUserName) + fl;
-          message += "Pass:" + String(config.mqttPass) + fl;
-          message += "Topic:" + String(config.writeTopic) + fl;
-          message += "Port:" + String(config.mqttPort) + fl;
+          message += "User:"    + String(config.mqttUserName) + fl;
+          message += "Pass:"    + String(config.mqttPass) + fl;
+          message += "Topic:"   + String(config.writeTopic) + fl;
+          message += "Port:"    + String(config.mqttPort) + fl;
         }
         else {
           DynamicJsonDocument doc(210);
@@ -674,9 +774,9 @@ fin_tel:
       }
       sendSMSReply(SenderNum, sms);
     }
-    else if (textesms.indexOf(F("GPRSDATA")) == 0) {
-      // Parametres GPRSDATA = APN:USER:PASS
-      // GPRSDATA=sl2sfr::
+    else if (textesms.indexOf(F("GPRSDATA")) > -1) {
+      // Parametres GPRSDATA = "APN":"user":"pass"
+      // GPRSDATA="sl2sfr":"":""
       // {"GPRSDATA":{"apn":"sl2sfr","user":"","pass":""}}
       bool erreur = false;
       bool formatsms = false;
@@ -688,26 +788,48 @@ fin_tel:
         }
         else {
           JsonObject gprsdata = doc["GPRSDATA"];
-          config.apn      < gprsdata["apn"];
-          config.gprsUser < gprsdata["user"];
-          config.gprsPass < gprsdata["pass"];
+          strncpy(config.apn, gprsdata["apn"], 11);
+          strncpy(config.gprsUser, gprsdata["user"], 11);
+          strncpy(config.gprsPass, gprsdata["pass"], 11);
+          // Serial.print("apn length:"),Serial.println(strlen(gprsdata["apn"]));
+          // Serial.print("apn:"),Serial.println(config.apn);
+          // Serial.print("user:"),Serial.println(config.gprsUser);
+          // Serial.print("pass:"),Serial.println(config.gprsPass);
           sauvConfig();													// sauvegarde en EEPROM
         }
       }
       else if ((textesms.indexOf(char(61))) == 8) { // format sms
         formatsms = true;
-        byte x = textesms.indexOf(":");
-        byte y = textesms.indexOf(":", x + 1);
-        byte z = textesms.length();
-        Serial.printf("%d:%d:%d\n", x - 9, y - x - 1, z - y - 1);
-        if ((x - 9) < 11 && (y - x - 1) < 11 && (z - y - 1) < 11) {
-          Sbidon = textesms.substring(9, x);
-          Sbidon.toCharArray(config.apn, (Sbidon.length() + 1));
-          Sbidon = textesms.substring(x + 1, y);
-          Sbidon.toCharArray(config.gprsUser, (Sbidon.length() + 1));
-          Sbidon = textesms.substring(y + 1, z);
-          Sbidon.toCharArray(config.gprsPass, (Sbidon.length() + 1));
-          sauvConfig();													// sauvegarde en EEPROM
+        byte cpt = 0;
+        byte i = 9;
+        do { // compte nombre de " doit etre =6
+          i = textesms.indexOf('"', i + 1);
+          cpt ++;
+        } while (i <= textesms.length());
+        Serial.print("nombre de \" :"), Serial.println(cpt);
+        if (cpt == 6) {
+          byte x = textesms.indexOf(':');
+          byte y = textesms.indexOf(':', x + 1);
+          byte z = textesms.lastIndexOf('"');
+          // Serial.printf("%d:%d:%d\n",x,y,z);
+          // Serial.printf("%d:%d:%d\n", x -1 - 10, y-1 - x-1-1, z - y-1-1);
+          if ((x - 11) < 11 && (y - x - 3) < 11 && (z - y - 2) < 11) { // verification longueur des variables
+            Sbidon = textesms.substring(10, x - 1);
+            Sbidon.toCharArray(config.apn, (Sbidon.length() + 1));
+            Sbidon = textesms.substring(x + 1 + 1 , y - 1);
+            Sbidon.toCharArray(config.gprsUser, (Sbidon.length() + 1));
+            Sbidon = textesms.substring(y + 1 + 1, z);
+            Sbidon.toCharArray(config.gprsPass, (Sbidon.length() + 1));
+
+            // Serial.print("apn:"),Serial.println(config.apn);
+            // Serial.print("user:"),Serial.println(config.gprsUser);
+            // Serial.print("pass:"),Serial.println(config.gprsPass);
+
+            sauvConfig();													// sauvegarde en EEPROM
+          }
+          else {
+            erreur = true;
+          }
         }
         else {
           erreur = true;
@@ -717,14 +839,14 @@ fin_tel:
         if (formatsms) {
           message += "Sera pris en compte au prochain demarrage\nOu envoyer RST maintenant";
           message += fl;
-          message += F("Parametres GPRS APN:USER:PASS =");
-          message += fl;
+          message += F("Parametres GPRS \"apn\":\"user\":\"pass\"");
+          message += fl + "\"";
           message += String(config.apn);
-          message += ":";
+          message += "\":\"";
           message += String(config.gprsUser);
-          message += ":";
+          message += "\":\"";
           message += String(config.gprsPass);
-          message += fl;
+          message += "\"" + fl;
         }
         else {
           DynamicJsonDocument doc(120);
@@ -802,7 +924,7 @@ fin_tel:
       }
       sendSMSReply(SenderNum, sms);
     }
-    else if (textesms == F("RST")) {               // demande RESET
+    else if (textesms.indexOf("RST") == 0) {               // demande RESET
       message += F("Le systeme va etre relance");  // apres envoie du SMS!
       message += fl;
       FlagReset = true;                            // reset prochaine boucle
@@ -837,11 +959,11 @@ fin_tel:
       //Serial.print(F("Sbidon=")),Serial.print(Sbidon),Serial.print(char(44)),Serial.println(Sbidon.length());
       long tension = 0;
       if (Sbidon.substring(0, 1) == "." && Sbidon.length() > 1) { // debut mode cal
-        // if (Sbidon.substring(1, 2) == "1" ) {
-        // M = 1;
-        // P = PinBattSol;
-        // coef = CoeffTension[0];
-        // }
+        if (Sbidon.substring(1, 2) == "1" ) {
+          M = 1;
+          P = PinAlim;
+          coef = CoeffTension[0];
+        }
         if (Sbidon.substring(1, 2) == "2" ) {
           M = 2;
           P = PinBattProc;
@@ -974,12 +1096,12 @@ bool getGPSdata() {
   // {"Id":"BB63000","date_tx_sms":"2020-02-10 15:15:15","lat":42.123456,"lon":2.123456,"speed":25.2,"course":180}
 
   DynamicJsonDocument JsonDoc (200);
-  JsonDoc["Id"] = config.Idchar;
+  JsonDoc["Id"]          = config.Idchar;
   JsonDoc["date_tx_sms"] = bidon;
-  JsonDoc["lat"] = String(lat, 8);
-  JsonDoc["lon"] = String(lon, 8);
-  JsonDoc["speed"] = String(speed, 1);
-  JsonDoc["course"] = String(course, 0);
+  JsonDoc["lat"]         = String(lat, 8);
+  JsonDoc["lon"]         = String(lon, 8);
+  JsonDoc["speed"]       = String(speed, 1);
+  JsonDoc["course"]      = String(course, 0);
 
   char JSONmessageBuffer[200];
   serializeJson(JsonDoc, JSONmessageBuffer);
@@ -1012,21 +1134,20 @@ int mqttSubscriptionCallback( char* topic, byte* payload, unsigned int mesLength
 void mqttConnect() {
   // 7) Use the MQTTConnect function to set up and maintain a connection to the MQTT. This function generates a random client ID for connecting to the ThingSpeak MQTT server.
 
-  // char clientID[ 9 ];
-
-  // Loop until connected.
-  while ( !mqttClient.connected()) {
-    // getID(clientID, 8);
-    // Connect to the MQTT broker.
-    Serial.print("Attempting MQTT connection...");
-    if ( mqttClient.connect(config.Idchar, config.mqttUserName, config.mqttPass)) {
-      Serial.println( "Connected with Client ID:  " + String(config.Idchar) + " User " + String(config.mqttUserName) + " Pwd " + String(config.mqttPass));
-    } else {
-      Serial.print( "failed, rc = " );
-      // See https://pubsubclient.knolleary.net/api.html#state for the failure code explanation.
-      Serial.print( mqttClient.state() );
-      Serial.println( " Will try again in 5 seconds" );
-      delay( 5000 );
+  if (modem.isGprsConnected()) {
+    // Loop until connected.
+    while ( !mqttClient.connected()) {
+      // Connect to the MQTT broker.
+      Serial.print("Attempting MQTT connection...");
+      if ( mqttClient.connect(config.Idchar, config.mqttUserName, config.mqttPass)) {
+        Serial.println( "Connected with Client ID:  " + String(config.Idchar) + " User " + String(config.mqttUserName) + " Pwd " + String(config.mqttPass));
+      } else {
+        Serial.print( "failed, rc = " );
+        // See https://pubsubclient.knolleary.net/api.html#state for the failure code explanation.
+        Serial.print( mqttClient.state() );
+        Serial.println( " Will try again in 5 seconds" );
+        delay( 5000 );
+      }
     }
   }
 }
@@ -1080,15 +1201,15 @@ void generationMessage() {
   /* Generation du message etat/alarme général */
 
   messageId();
-  if (!true) {
+  if (FlagAlarmeTension || FlagAlarmeGprs || FlagAlarmeMQTT || FlagAlarmeGps) {
     message += F("--KO--------KO--");
   }
   else {
     message += F("-------OK-------");
   }
   message += fl;
-  message += F("Batterie : ");				//"Alarme Batterie : "
-  if (false) {
+  message += F("Alimentation : ");				//"Alarme Batterie : "
+  if (FlagAlarmeTension) {
     message += F("Alarme, ");
     // message += fl;// V2-15
   }
@@ -1096,8 +1217,28 @@ void generationMessage() {
     message += F("OK, ");
     // message += fl;// V2-15
   }
+  message += String(VAlim) + "mV";
   message += fl;
-  message += "Valim generale = ";
+
+  if (!FlagAlarmeGprs) {
+    message += "GPRS OK" + fl;
+  } else {
+    message += "GPRS KO" + fl;
+  }
+
+  if (!FlagAlarmeMQTT) {
+    message += "MQQT OK" + fl;
+  } else {
+    message += "MQTT KO" + fl;
+  }
+
+  if (!FlagAlarmeGps) {
+    message += "GPS OK" + fl;
+  } else {
+    message += "GPS KO" + fl;
+  }
+
+  message += "Valim proc = ";
   message += String(VBatterieProc) + "mV";
   message += fl;
 }
@@ -1129,16 +1270,16 @@ void init_adc_mm(void) {
 }
 //---------------------------------------------------------------------------
 void adc_read() {
-  read_adc(PinBattProc); // lecture des adc
+  read_adc(PinAlim, PinBattProc); // lecture des adc
 }
 //---------------------------------------------------------------------------
-void read_adc(int pin2) {
+void read_adc(int pin1, int pin2) {
   // http://www.f4grx.net/algo-comment-calculer-une-moyenne-glissante-sur-un-microcontroleur-a-faibles-ressources/
   static int plus_ancien = 0;
   //acquisition
   int sample[5];
   for (byte i = 0; i < 5; i++) {
-    // if (i == 0)sample[i] = moyenneAnalogique(pin1);
+    if (i == 0)sample[i] = moyenneAnalogique(pin1);
     if (i == 1)sample[i] = moyenneAnalogique(pin2);
     // if (i == 2)sample[i] = moyenneAnalogique(pin3);
     // if (i == 3)sample[i] = moyenneAnalogique(pin4);
@@ -1414,7 +1555,7 @@ void Tel_listPage() {
   webpage += F("<th> Num&eacute;ro </th>");
   webpage += F("</tr>");
   // if (gsm) {
-  int nligne = modem.ListPhonebook(1, 10);
+  byte nligne = modem.ListPhonebook(1, 10);
   for (int idx = 1; idx < nligne + 1; idx ++) {
     webpage += F("<tr>");
     webpage += F("<td>"); webpage += String(modem.readPhonebookEntry(idx).text); webpage += F("</td>");
