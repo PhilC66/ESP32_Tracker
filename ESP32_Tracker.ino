@@ -2,7 +2,7 @@
 /* Ph Corbel 31/01/2020 */
 /* ESP32+Sim808
   Compilation LOLIN D32,default,80MHz, ESP32 1.0.2 (1.0.4 bugg?)
-  Arduino IDE 1.8.10 : 981254 74%, 46936 14% sur PC
+  Arduino IDE 1.8.10 : 981438 74%, 46936 14% sur PC
   Arduino IDE 1.8.10 : 981226 74%, 46936 14% sur raspi
 */
 
@@ -68,8 +68,8 @@ bool    SPIFFS_present = false;
 #define PinAlim       26   // mesure tension alimentation
 
 const String soft = "ESP32_Tracker.ino.d32"; // nom du soft
-int ver        = 103;
-int Magique    = 14;
+int ver        = 104;
+int Magique    = 15;
 
 char filecalibration[11] = "/coeff.txt";    // fichier en SPIFFS contenant les data de calibration
 #define nSample (1<<4)    // nSample est une puissance de 2, ici 16 (4bits)
@@ -171,7 +171,7 @@ void setup() {
     config.vtransition      = 2;       // kmh
     config.timeoutWifi      = 10 * 60;
     String temp             = "TPCF_63000";
-    String tempapn          = "sl2sfr";//"free";
+    String tempapn          = "free";//"sl2sfr";//"free";
     String tempUser         = "";
     String tempPass         = "";
     String tempmqttServer   = "philippeco.hopto.org";
@@ -220,25 +220,24 @@ void setup() {
   if (modem.isNetworkConnected()) {
     Serial.println("Network connected");
   }
+  if(config.tracker){
+    ConnectGPRS();
+    
+    bool res = modem.isGprsConnected();
+    // DBG("GPRS status:", res ? "connected" : "not connected");
 
-  ConnectGPRS();
-  
-  bool res = modem.isGprsConnected();
-  // DBG("GPRS status:", res ? "connected" : "not connected");
-
-  // String ccid = modem.getSimCCID();
-  // Serial.print("CCID:"),Serial.println(ccid);
-
+    // String ccid = modem.getSimCCID();
+    // Serial.print("CCID:"),Serial.println(ccid);
+    IPAddress local = modem.localIP();
+    Serial.println("Local IP:" + local.toString());
+  }
   modem.setGsmBusy(true);// reject incoming call
 
   String imei = modem.getIMEI();
   Serial.println("IMEI:" + imei);
 
   String cop = modem.getOperator();
-  Serial.println("Operator:" + cop);
-
-  IPAddress local = modem.localIP();
-  Serial.println("Local IP:" + local.toString());
+  Serial.println("Operator:" + cop);  
 
   Serial.print("Signal quality:"), Serial.println(read_RSSI());
 
@@ -374,18 +373,18 @@ void Acquisition() {
 
   VAlim         = map(adc_mm[0] / nSample, 0, 4095, 0, CoeffTension[0]);
   VBatterieProc = map(adc_mm[1] / nSample, 0, 4095, 0, CoeffTension[1]);
-  Serial.print("tension proc = "), Serial.print(VBatterieProc / 1000.0, 3), Serial.println("V");
-  Serial.print("tension alim = "), Serial.print(VAlim / 1000.0, 3), Serial.println("V");
+  Serial.print("tension proc = "), Serial.print(VBatterieProc / 1000.0, 2), Serial.println("V");
+  Serial.print("tension alim = "), Serial.print(VAlim / 1000.0, 2), Serial.println("V");
 
   static byte nalaAlim = 0;
   static byte nRetourTension = 0;
-  if (VAlim < 3500) {
+  if (VAlim < 4000) {
     if (nalaAlim ++ == 10) {
       FlagAlarmeTension = true;
       nalaAlim = 0;
     }
   }
-  else if (VAlim > 4000) {
+  else if (VAlim > 5000) {
     nRetourTension ++;
     if (nRetourTension == 4) {
       FlagAlarmeTension = false;
@@ -396,30 +395,35 @@ void Acquisition() {
     if (nalaAlim > 0)nalaAlim --;
   }
 
-  static byte nalaGprs = 0;
-  if (!modem.isGprsConnected()) {
-    modem.gprsConnect(config.apn, config.gprsUser, config.gprsPass);
-    if (nalaGprs ++ == 10) {
-      FlagAlarmeGprs = true;
-      nalaGprs = 0;
+  if (config.tracker){
+    static byte nalaGprs = 0;
+    if (!modem.isGprsConnected()) {
+      modem.gprsConnect(config.apn, config.gprsUser, config.gprsPass);
+      if (nalaGprs ++ == 10) {
+        FlagAlarmeGprs = true;
+        nalaGprs = 0;
+      }
+    } else {
+      if (nalaGprs > 0){
+        nalaGprs --;
+        FlagAlarmeGprs = false;
+      }
     }
-  } else {
-    if (nalaGprs > 0){
-      nalaGprs --;
-      FlagAlarmeGprs = false;
+    static byte nalaMQTT = 0;
+    if (!mqttClient.connected()) {
+      if (nalaMQTT ++ == 10) {
+        FlagAlarmeMQTT = true;
+        nalaMQTT = 0;
+      }
+    } else {
+      if (nalaMQTT > 0){
+        nalaMQTT --;
+        FlagAlarmeMQTT = false;
+      }
     }
-  }
-  static byte nalaMQTT = 0;
-  if (!mqttClient.connected()) {
-    if (nalaMQTT ++ == 10) {
-      FlagAlarmeMQTT = true;
-      nalaMQTT = 0;
-    }
-  } else {
-    if (nalaMQTT > 0){
-      nalaMQTT --;
-      FlagAlarmeMQTT = false;
-    }
+  } else{
+    FlagAlarmeGprs = false;
+    FlagAlarmeMQTT = false;
   }
   static byte nalaGps = 0;
   if (!getGPSdata()) {
@@ -537,6 +541,7 @@ void traite_sms(int index) {
         Id = String(config.Idchar);
         Id += fl;
       }
+      messageId();
       message += F("Nouvel Id");
       sendSMSReply(SenderNum, sms);
     }
@@ -720,14 +725,7 @@ fin_tel:
           modem.gprsDisconnect();
         }
       }
-      message += F("Tracker = ");
-      if (config.tracker) {
-        message += "1";
-      }
-      else {
-        message += "0";
-      }
-      message += fl;
+      generationMessage();
       sendSMSReply(SenderNum, sms);
     }
     else if (textesms.indexOf(F("TRCKPARAM")) > -1) {
@@ -1368,18 +1366,22 @@ void generationMessage() {
   }
   message += fl;
 
-  if (!FlagAlarmeGprs) {
-    message += "GPRS OK" + fl;
-  } else {
-    message += "GPRS KO" + fl;
-  }
+  if(config.tracker){    
+    message += "Tracker ON" + fl;
+    if (!FlagAlarmeGprs) {
+      message += "GPRS OK" + fl;
+    } else {
+      message += "GPRS KO" + fl;
+    }
 
-  if (!FlagAlarmeMQTT) {
-    message += "MQQT OK" + fl;
-  } else {
-    message += "MQTT KO" + fl;
+    if (!FlagAlarmeMQTT) {
+      message += "MQQT OK" + fl;
+    } else {
+      message += "MQTT KO" + fl;
+    }
+  }else{
+    message += "Tracker OFF" + fl;
   }
-
   if (!FlagAlarmeGps) {
     message += "GPS OK" + fl;
   } else {
@@ -1395,10 +1397,10 @@ void generationMessage() {
     message += F("OK, ");
     // message += fl;// V2-15
   }
-  message += String(VAlim) + "mV";
+  message += String(VAlim/1000.0, 2) + "V";
   message += fl;
   message += "Valim proc = ";
-  message += String(VBatterieProc) + "mV";
+  message += String(VBatterieProc/1000.0, 2) + "V";
   message += fl;
 }
 //---------------------------------------------------------------------------
