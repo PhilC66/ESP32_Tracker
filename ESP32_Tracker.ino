@@ -2,7 +2,7 @@
 /* Ph Corbel 31/01/2020 */
 /* ESP32+Sim808
   Compilation LOLIN D32,default,80MHz, ESP32 1.0.2 (1.0.4 bugg?)
-  Arduino IDE 1.8.10 : 981438 74%, 46936 14% sur PC
+  Arduino IDE 1.8.10 : 981366 74%, 46936 14% sur PC
   Arduino IDE 1.8.10 : 981226 74%, 46936 14% sur raspi
 */
 
@@ -468,13 +468,16 @@ void envoie_alarme() {
 }
 //---------------------------------------------------------------------------
 void envoieGroupeSMS(byte grp) {
-  byte nligne = modem.ListPhonebook(1, 10);
   generationMessage();
-  for (int idx = 1; idx < nligne + 1; idx++) {
-    if (!modem.sendSMS(modem.readPhonebookEntry(idx).number, message)) {
-      Serial.println(F("Envoi SMS Failed"));
+  for (int idx = 1; idx < 10; idx++) {
+    if(modem.readPhonebookEntry(idx).number.length() > 0){
+      if (!modem.sendSMS(modem.readPhonebookEntry(idx).number, message)) {
+        Serial.println(F("Envoi SMS Failed"));
+      } else {
+        Serial.println(F("SMS Sent OK"));
+      }
     } else {
-      Serial.println(F("SMS Sent OK"));
+      idx = 11;
     }
   }
   Serial.println(message);
@@ -500,11 +503,12 @@ void traite_sms(int index) {
   } else {
     Serial.print("newmessageindex: "), Serial.println(index);
     textesms   = modem.readSmsMessage(index, true).message;
+    Serial.print("sms: "), Serial.println(textesms);
     SenderNum  = modem.readSmsMessage(index, true).originatingAddress;
-    SenderName = modem.readSmsMessage(index, true).phoneBookEntry;
     Serial.print("sender: "), Serial.println(SenderNum);
+    SenderName = modem.readSmsMessage(index, true).phoneBookEntry;
     Serial.print("SenderName: "), Serial.println(SenderName);
-    // textesms = modem.readSMS(index);
+    // ne fonctionne pas bien
     // SenderNum = modem.getSenderID(index, false);
     // SenderName = modem.getSenderName(index, false);
     // Serial.print("SenderName length: "), Serial.println(SenderName.length());
@@ -517,7 +521,6 @@ void traite_sms(int index) {
     textesms = textesms.substring(0, textesms.indexOf(char(13))); // suppression /n/lf a la fin
     Serial.print("sms secours: "), Serial.print(textesms),Serial.print(","),Serial.println(textesms.length());
   }
-  // Serial.println(modem.readSMS(index,true));
   for (byte i = 0; i < textesms.length(); i++) {
     if ((int)textesms[i] < 0 || (int)textesms[i] > 127) { // caracteres accentués interdit
       goto sortir;
@@ -620,13 +623,16 @@ fin_tel:
       }
     }
     else if (textesms.indexOf("LST") == 0) {	//	Liste des Num Tel
-      byte nligne = modem.ListPhonebook(1, 10);
-      for (int idx = 1; idx < nligne + 1; idx ++) {
+      for (int idx = 1; idx < 10; idx ++) {
+        if(modem.readPhonebookEntry(idx).number.length() > 0){
         message += String(idx) + ":";
         message += modem.readPhonebookEntry(idx).number;
         message += ",";
         message += modem.readPhonebookEntry(idx).text;
         message += fl;
+        }else{
+          idx = 11;
+        }
       }
       sendSMSReply(SenderNum, sms);
     }
@@ -1909,12 +1915,15 @@ void Tel_listPage() {
   webpage += F("<th> Num&eacute;ro </th>");
   webpage += F("</tr>");
   // if (gsm) {
-  byte nligne = modem.ListPhonebook(1, 10);
-  for (int idx = 1; idx < nligne + 1; idx ++) {
-    webpage += F("<tr>");
-    webpage += F("<td>"); webpage += String(modem.readPhonebookEntry(idx).text); webpage += F("</td>");
-    webpage += F("<td>"); webpage += String(modem.readPhonebookEntry(idx).number); webpage += F("</td>");
-    webpage += F("</tr>");
+  for (int idx = 1; idx < 10; idx ++) {
+    if(modem.readPhonebookEntry(idx).number.length() > 0){
+      webpage += F("<tr>");
+      webpage += F("<td>"); webpage += String(modem.readPhonebookEntry(idx).text); webpage += F("</td>");
+      webpage += F("<td>"); webpage += String(modem.readPhonebookEntry(idx).number); webpage += F("</td>");
+      webpage += F("</tr>");
+    } else{
+      idx = 11;
+    }
   }
   webpage += F("</table><br>");
   append_page_footer();
