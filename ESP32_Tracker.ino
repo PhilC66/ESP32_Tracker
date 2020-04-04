@@ -2,8 +2,8 @@
 /* Ph Corbel 31/01/2020 */
 /* ESP32+Sim808
   Compilation LOLIN D32,default,80MHz, ESP32 1.0.2 (1.0.4 bugg?)
-  Arduino IDE 1.8.10 : 981366 74%, 46936 14% sur PC
-  Arduino IDE 1.8.10 : 981226 74%, 46936 14% sur raspi
+  Arduino IDE 1.8.10 : 981342 74%, 46936 14% sur PC
+  Arduino IDE 1.8.10 : 981302 74%, 46936 14% sur raspi
 */
 
 /* A faire
@@ -27,7 +27,7 @@
 */
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <TinyGsmClient.h>
+#include <TinyGsmClient.h>         // modifié
 #include <PubSubClient.h>          // modifié define MQTT_MAX_PACKET_SIZE 164
 #include <WiFi.h>
 #include <Time.h>
@@ -68,7 +68,7 @@ bool    SPIFFS_present = false;
 #define PinAlim       26   // mesure tension alimentation
 
 const String soft = "ESP32_Tracker.ino.d32"; // nom du soft
-int ver        = 104;
+int ver        = 105;
 int Magique    = 15;
 
 char filecalibration[11] = "/coeff.txt";    // fichier en SPIFFS contenant les data de calibration
@@ -144,7 +144,7 @@ Ticker ADC;                // Lecture des Adc
 //---------------------------------------------------------------------------
 void setup() {
 
-  message.reserve(140); // texte des SMS
+  //message.reserve(300); // texte des SMS
   setCpuFrequencyMhz(80);// 30mA, a la place de 240MHz 65mA par defaut
   Serial.begin(115200);
   SerialAT.begin(9600, SERIAL_8N1, RXD2, TXD2, false);
@@ -174,7 +174,7 @@ void setup() {
     String tempapn          = "free";//"sl2sfr";//"free";
     String tempUser         = "";
     String tempPass         = "";
-    String tempmqttServer   = "philippeco.hopto.org";
+    String tempmqttServer   = "philippeco.hopto.org";//exploitation.tpcf.fr
     String tempmqttUserName = "TpcfUser";
     String tempmqttPass     = "hU4zHox1iHCDHM2";
     String temptopic        = "localisation";
@@ -330,6 +330,7 @@ void loop() {
 void once() {
   Serial.println("Premier lancement");
   if(config.tracker){
+    Accu = 255; // forcer plusieurs envoie au lancement
     Alarm.write(Send, config.tlent);
     senddata();
   }
@@ -359,14 +360,15 @@ void Acquisition() {
   if (CoeffTension[0] == 0 || CoeffTension[1] == 0 || CoeffTension[2] == 0 || CoeffTension[3] == 0) {
     OuvrirFichierCalibration(); // patch relecture des coeff perdu
   }
-
-  int idx = modem.newMessageIndex(0); // verifie arrivée sms
-
-  if (idx > 0) {
+  static byte last_idx = 0;
+  byte idx = modem.newMessageIndex(0); // verifie arrivée sms
+  if (idx > last_idx) last_idx = idx;
+  if (last_idx > 0) {
     Serial.print("sms recu:"), Serial.println(idx);
-    traite_sms(idx);
+    traite_sms(last_idx);
+    if(last_idx > 0) last_idx --;
   }
-  else if (idx == 0 && FlagReset) {
+  else if (last_idx == 0 && FlagReset) {
     FlagReset = false;
     ResetHard();				//	reset hard
   }
@@ -507,7 +509,7 @@ void traite_sms(int index) {
     SenderNum  = modem.readSmsMessage(index, true).originatingAddress;
     Serial.print("sender: "), Serial.println(SenderNum);
     SenderName = modem.readSmsMessage(index, true).phoneBookEntry;
-    Serial.print("SenderName: "), Serial.println(SenderName);
+    Serial.print("SenderName: "), Serial.print(SenderName), Serial.print(","),Serial.println(SenderName.length());
     // ne fonctionne pas bien
     // SenderNum = modem.getSenderID(index, false);
     // SenderName = modem.getSenderName(index, false);
@@ -521,11 +523,13 @@ void traite_sms(int index) {
     textesms = textesms.substring(0, textesms.indexOf(char(13))); // suppression /n/lf a la fin
     Serial.print("sms secours: "), Serial.print(textesms),Serial.print(","),Serial.println(textesms.length());
   }
-  for (byte i = 0; i < textesms.length(); i++) {
-    if ((int)textesms[i] < 0 || (int)textesms[i] > 127) { // caracteres accentués interdit
-      goto sortir;
-    }
-  }
+  // for (byte i = 0; i < textesms.length(); i++) {
+    // if ((int)textesms[i] < 0 || (int)textesms[i] > 127) { // caracteres accentués interdit
+      // Serial.println("caracteres >127 Sortie");
+      // goto sortir;
+    // }
+  // }
+
   if ((sms && SenderName.length() > 0) || !sms) { // emetteur reconnu dans Phone Book
     messageId();
     if (!(textesms.indexOf(F("TEL")) == 0 || textesms.indexOf(F("tel")) == 0 || textesms.indexOf(F("Tel")) == 0
@@ -721,6 +725,7 @@ fin_tel:
           ConnectGPRS();
           Alarm.disable(Send);
           Alarm.write(Send, config.tlent);
+          Accu = 255;
           senddata(); // active la localisation          
         }
         else if (i == 0) {
@@ -1209,7 +1214,7 @@ fin_tel:
     Serial.println("Appelant non reconnu");
   }
 
-sortir:
+//sortir:
   if (sms) {
     EffaceSMS(index);
   }
