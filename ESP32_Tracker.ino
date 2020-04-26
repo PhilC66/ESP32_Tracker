@@ -2,8 +2,8 @@
 /* Ph Corbel 31/01/2020 */
 /* ESP32+Sim808
   Compilation LOLIN D32,default,80MHz, ESP32 1.0.2 (1.0.4 bugg?)
-  Arduino IDE 1.8.10 : 981342 74%, 46936 14% sur PC
-  Arduino IDE 1.8.10 : 981302 74%, 46936 14% sur raspi
+  Arduino IDE 1.8.10 : 981442 74%, 46944 14% sur PC
+  Arduino IDE 1.8.10 : 981382 74%, 46936 14% sur raspi
 */
 
 /* A faire
@@ -68,7 +68,7 @@ bool    SPIFFS_present = false;
 #define PinAlim       26   // mesure tension alimentation
 
 const String soft = "ESP32_Tracker.ino.d32"; // nom du soft
-int ver        = 105;
+int ver        = 106;
 int Magique    = 15;
 
 char filecalibration[11] = "/coeff.txt";    // fichier en SPIFFS contenant les data de calibration
@@ -337,7 +337,13 @@ void once() {
 }
 //---------------------------------------------------------------------------
 void senddata() {
+  static bool firstGps = false;
   if (getGPSdata()) {
+    if(!firstGps){ // en cas de demarrage GPS tardif, risque heure fausse
+      firstGps = true;
+      Accu = 255; // forcer plusieurs envoie au lancement
+      MajHeure();
+    }
     // mqttPublish(config.writeTopic, dataToPublish, fieldsToPublish);
     bool rep = mqttClient.publish(config.writeTopic, dataToPublish.c_str());
     Serial.print("publication :"), Serial.println(rep);
@@ -1247,8 +1253,8 @@ void gereCadence() {
     senddata();
     Serial.print("cadence  = "), Serial.println(config.trapide);
   }
-  // Serial.print("speed = "), Serial.println(speed);
-  // Serial.print("Accu  = "), Serial.println(Accu);
+  Serial.print("speed = "), Serial.print(speed);
+  Serial.print(", Accu  = "), Serial.println(Accu);
 }
 //---------------------------------------------------------------------------
 bool getGPSdata() {
