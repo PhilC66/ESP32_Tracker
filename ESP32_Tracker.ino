@@ -2,8 +2,8 @@
 /* Ph Corbel 31/01/2020 */
 /* ESP32+Sim808
   Compilation LOLIN D32,default,80MHz, ESP32 1.0.2 (1.0.4 bugg?)
-  Arduino IDE 1.8.10 : 981442 74%, 46944 14% sur PC
-  Arduino IDE 1.8.10 : 981382 74%, 46936 14% sur raspi
+  Arduino IDE 1.8.10 : 981490 74%, 46944 14% sur PC
+  Arduino IDE 1.8.10 : 981434 74%, 46944 14% sur raspi
 */
 
 /* A faire
@@ -69,7 +69,7 @@ bool    SPIFFS_present = false;
 
 const String soft = "ESP32_Tracker.ino.d32"; // nom du soft
 int ver        = 106;
-int Magique    = 15;
+int Magique    = 16;
 
 char filecalibration[11] = "/coeff.txt";    // fichier en SPIFFS contenant les data de calibration
 #define nSample (1<<4)    // nSample est une puissance de 2, ici 16 (4bits)
@@ -147,6 +147,7 @@ void setup() {
   //message.reserve(300); // texte des SMS
   setCpuFrequencyMhz(80);// 30mA, a la place de 240MHz 65mA par defaut
   Serial.begin(115200);
+  Serial.println(__FILE__);
   SerialAT.begin(9600, SERIAL_8N1, RXD2, TXD2, false);
   Alarm.delay(100);//1000
 
@@ -174,7 +175,7 @@ void setup() {
     String tempapn          = "free";//"sl2sfr";//"free";
     String tempUser         = "";
     String tempPass         = "";
-    String tempmqttServer   = "philippeco.hopto.org";//exploitation.tpcf.fr
+    String tempmqttServer   = "exploitation.tpcf.fr";//"philippeco.hopto.org";//exploitation.tpcf.fr
     String tempmqttUserName = "TpcfUser";
     String tempmqttPass     = "hU4zHox1iHCDHM2";
     String temptopic        = "localisation";
@@ -355,13 +356,14 @@ void Acquisition() {
 
   static float lastlon = 0;
   static float lastlat = 0;
+  if(config.tracker){
+    gereCadence();
+  }
+
   getGPSdata();
   Serial.print("distance:"), Serial.println(calc_dist(lat, lon, lastlat, lastlon), 2);
   lastlat = lat;
   lastlon = lon;
-  if(config.tracker){
-    gereCadence();
-  }
 
   if (CoeffTension[0] == 0 || CoeffTension[1] == 0 || CoeffTension[2] == 0 || CoeffTension[3] == 0) {
     OuvrirFichierCalibration(); // patch relecture des coeff perdu
@@ -667,8 +669,8 @@ fin_tel:
 
       message += ("Ver:") + String(ver) + fl;
 
-      message += F("Valim generale = ");
-      message += String(VBatterieProc) + "mV";
+      message += F("Valim Proc = ");
+      message += String(VBatterieProc/1000.0,2) + "V";
 
       sendSMSReply(SenderNum, sms);
     }
