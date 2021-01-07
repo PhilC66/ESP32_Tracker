@@ -2,8 +2,10 @@
 /* Ph Corbel 31/01/2020 */
 /* ESP32+Sim808
   Compilation LOLIN D32,default,80MHz, ESP32 1.0.2 (1.0.4 bugg?)
-  Arduino IDE 1.8.10 : 981490 74%, 46944 14% sur PC
-  Arduino IDE 1.8.10 : 981434 74%, 46944 14% sur raspi
+  Arduino IDE 1.8.10 : 981518 74%, 46840 14% sur PC
+  Arduino IDE 1.8.10 : 981462 74%, 46840 14% sur raspi
+
+  V 107 externalisation données
 */
 
 /* A faire
@@ -44,6 +46,7 @@
 #include <Update.h>               //update
 #include <CRC32.h>                //update
 #include "passdata.h"
+#include "credentials_mqtt.h"
 
 #define TINY_GSM_RX_BUFFER 1030   //update
 #define TINY_GSM_MODEM_SIM808
@@ -68,7 +71,7 @@ bool    SPIFFS_present = false;
 #define PinAlim       26   // mesure tension alimentation
 
 const String soft = "ESP32_Tracker.ino.d32"; // nom du soft
-int ver        = 106;
+int ver        = 107;
 int Magique    = 16;
 
 char filecalibration[11] = "/coeff.txt";    // fichier en SPIFFS contenant les data de calibration
@@ -172,16 +175,12 @@ void setup() {
     config.vtransition      = 2;       // kmh
     config.timeoutWifi      = 10 * 60;
     String temp             = "TPCF_63000";
-    String tempapn          = "free";//"sl2sfr";//"free";
+    String tempapn          = "free";//"sl2sfr"
     String tempUser         = "";
     String tempPass         = "";
-    String tempmqttServer   = "exploitation.tpcf.fr";//"philippeco.hopto.org";//exploitation.tpcf.fr
-    String tempmqttUserName = "TpcfUser";
-    String tempmqttPass     = "hU4zHox1iHCDHM2";
-    String temptopic        = "localisation";
-    config.mqttPort         = 5335;//1883;
     config.hete             = 2;
     config.hhiver           = 1;
+    config.mqttPort         = tempmqttPort;
     temp.toCharArray(config.Idchar, 11);
     tempapn.toCharArray(config.apn, (tempapn.length() + 1));
     tempUser.toCharArray(config.gprsUser, (tempUser.length() + 1));
@@ -214,7 +213,7 @@ void setup() {
   if (!modem.waitForNetwork()) {
     Serial.println(" fail");
     Alarm.delay(10000);
-    return;
+    // return;
   }
   Serial.println(" success");
 
@@ -826,8 +825,6 @@ fin_tel:
     }
     else if (textesms.indexOf("MQTTDATA") > -1) {
       // Parametres MQTTDATA=Serveur:User:Pass:Topic:port
-      // MQTTDATA=philippeco.hopto.org:TpcfUser:hU4zHox1iHCDHM2:localisation:1883
-      // {"MQTTDATA":{"serveur":"philippeco.hopto.org","user":"TpcfUser","pass":"hU4zHox1iHCDHM2","topic":"localisation","port":1883}}
       bool erreur = false;
       bool formatsms = false;
       if (textesms.indexOf(":") == 11) { // format json
@@ -909,7 +906,7 @@ fin_tel:
     }
     else if (textesms.indexOf("MQTTSERVEUR") == 0) { // Serveur MQTT
       // case sensitive
-      // MQTTSERVEUR=philippeco.hopto.org
+      // MQTTSERVEUR=abcd.org
       if (textesms.indexOf(char(61)) == 11) {
         Sbidon = textesms.substring(12);
         Serial.print("mqttserveur:"),Serial.print(Sbidon);

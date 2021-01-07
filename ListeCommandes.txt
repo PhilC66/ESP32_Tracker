@@ -6,7 +6,7 @@ ST/ETAT
 SYS
 IMEI
 ID
-TIMERLENT                 60-3600
+TIMERLENT                 10-3600
 TIMERRAPIDE               1-1800
 VITESSEMINI               1-20
 GPRSDATA="apn":"user":"pass" (case sensitive)
@@ -18,4 +18,3 @@ MQTTDATA Parametres MQTTDATA=Serveur:User:Pass:Topic:port, case sensitive pas de
 TIMESAVING
 
 UPDATE update soft pas encore operationnel
-
