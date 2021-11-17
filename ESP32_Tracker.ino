@@ -1,9 +1,13 @@
 /* Tracker GPRS MQTT */
 /* Ph Corbel 31/01/2020 */
 /* ESP32+Sim808
-  Compilation LOLIN D32,default,80MHz, ESP32 1.0.2 (1.0.4 bugg?)
-  Arduino IDE 1.8.10 : 981518 74%, 46840 14% sur PC
-  Arduino IDE 1.8.10 : 981462 74%, 46840 14% sur raspi
+  Compilation LOLIN D32,default,80MHz, ESP32 1.0.6
+  Arduino IDE 1.8.16 : 1029462 78%, 47392 14% sur PC
+  Arduino IDE 1.8.16 :  74%,  14% sur raspi
+
+  V108 installé Tracker AKKA
+  securisation mise à l'heure si GPS demarrage tardif
+  course fantaisiste à l'arret, memorisation du dernier course si vitesse = 0
 
   V 107 externalisation données
 */
@@ -71,7 +75,7 @@ bool    SPIFFS_present = false;
 #define PinAlim       26   // mesure tension alimentation
 
 const String soft = "ESP32_Tracker.ino.d32"; // nom du soft
-int ver        = 107;
+int ver        = 108;
 int Magique    = 16;
 
 char filecalibration[11] = "/coeff.txt";    // fichier en SPIFFS contenant les data de calibration
@@ -170,8 +174,8 @@ void setup() {
     Serial.println(F("Nouvelle Configuration !"));
     config.magic            = Magique;
     config.tracker          = true;
-    config.trapide          = 15;      // secondes
-    config.tlent            = 15 * 60; // secondes
+    config.trapide          = 10;      // secondes
+    config.tlent            = 15; // secondes
     config.vtransition      = 2;       // kmh
     config.timeoutWifi      = 10 * 60;
     String temp             = "TPCF_63000";
@@ -337,12 +341,12 @@ void once() {
 }
 //---------------------------------------------------------------------------
 void senddata() {
-  static bool firstGps = false;
+  static bool firstGps = true;
   if (getGPSdata()) {
-    if(!firstGps){ // en cas de demarrage GPS tardif, risque heure fausse
-      firstGps = true;
+    if(firstGps){ // en cas de demarrage GPS tardif, risque heure fausse
+      // firstGps = true;
       Accu = 255; // forcer plusieurs envoie au lancement
-      MajHeure();
+      if(MajHeure()) firstGps = false;
     }
     // mqttPublish(config.writeTopic, dataToPublish, fieldsToPublish);
     bool rep = mqttClient.publish(config.writeTopic, dataToPublish.c_str());
@@ -1103,10 +1107,10 @@ fin_tel:
           recoit message "CALIBRATION=.X"
           entrer mode calibration
           Selection de la tenssion à calibrer X
-          X = 1 TensionBatterie : PinBattSol : CoeffTension1
-          X = 2 VBatterieProc : PinBattProc : CoeffTension2
-          X = 3 VUSB : PinBattUSB : CoeffTension3
-          X = 4 Tension24 : Pin24V : CoeffTension4
+          X = 1 Valim : PinAlim : CoeffTension1
+          X = 2 VProc : PinBattProc : CoeffTension2
+          X = 3 NC, VUSB : PinBattUSB : CoeffTension3
+          X = 4 NC, Tension24 : Pin24V : CoeffTension4
           effectue mesure tension avec CoeffTensionDefaut retourne et stock resultat
           recoit message "CALIBRATION=1250" mesure réelle en V*100
           calcul nouveau coeff = mesure reelle/resultat stocké * CoeffTensionDefaut
@@ -1257,11 +1261,16 @@ void gereCadence() {
 }
 //---------------------------------------------------------------------------
 bool getGPSdata() {
-
+  static float lastcourse = 0;
   int alt, vsat, usat;
   bool fix = false;
   fix = modem.getGPS(&lat, &lon, &speed, &alt, &course, &vsat, &usat);
   if (!fix) return fix; // sortir si fix false
+
+  if (speed < 0.5){ // evité course fantaisiste à l'arret, recopie course precedent
+    course = lastcourse;
+  }
+  lastcourse = course;
 
   char bidon[20];
   sprintf(bidon, "%04d-%02d-%02d %02d:%02d:%02d", year(), month(), day(), hour(), minute(), second());
@@ -2273,9 +2282,9 @@ bool MajHeure() {
     setTime(hr, mn, sec, dy, mnth, yr);
     Serial.println(displayTime());
   }
-  else {
+  // else {
     return fix; // sortir si fix false
-  }
+  // }
 }
 //---------------------------------------------------------------------------
 bool HeureEte() {
