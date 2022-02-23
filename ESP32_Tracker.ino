@@ -7,7 +7,7 @@
 
   V108 installé Tracker AKKA
   securisation mise à l'heure si GPS demarrage tardif
-  course fantaisiste à l'arret, memorisation du dernier course si vitesse = 0
+  course fantaisiste à l'arret, memorisation du dernier course si vitesse <1
 
   V 107 externalisation données
 */
@@ -1267,7 +1267,7 @@ bool getGPSdata() {
   fix = modem.getGPS(&lat, &lon, &speed, &alt, &course, &vsat, &usat);
   if (!fix) return fix; // sortir si fix false
 
-  if (speed < 0.5){ // evité course fantaisiste à l'arret, recopie course precedent
+  if (speed < 1){ // evité course fantaisiste à l'arret, recopie course precedent
     course = lastcourse;
   }
   lastcourse = course;
