@@ -1,11 +1,15 @@
 /* Tracker GPRS MQTT */
 /* Ph Corbel 31/01/2020 */
 /* ESP32+Sim808
+Compilation LOLIN D32,default,80MHz, ESP32 1.0.2
+  Arduino IDE 1.8.16 : 980918 74%, 46768 14% sur PC
+  Arduino IDE 1.8.16 :  74%,  14% sur raspi
+
   Compilation LOLIN D32,default,80MHz, ESP32 1.0.6
   Arduino IDE 1.8.16 : 1029462 78%, 47392 14% sur PC
   Arduino IDE 1.8.16 :  74%,  14% sur raspi
 
-  V108 installé Tracker AKKA
+  V108 installé Tracker 63165
   securisation mise à l'heure si GPS demarrage tardif
   course fantaisiste à l'arret, memorisation du dernier course si vitesse <1
 
@@ -33,7 +37,7 @@
 */
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <TinyGsmClient.h>         // modifié
+#include <TinyGsmClient.h>         // modifié pour version 2G repertoire "TinyGSMClient_09200"
 #include <PubSubClient.h>          // modifié define MQTT_MAX_PACKET_SIZE 164
 #include <WiFi.h>
 #include <Time.h>
@@ -1161,7 +1165,7 @@ fin_tel:
         // Serial.print("TensionBatterie = "),Serial.println(TensionBatterie);
         tensionmemo = tension;
       }
-      else if (FlagCalibration && Sbidon.substring(0, 4).toInt() > 0 && Sbidon.substring(0, 4).toInt() <= 8000) {
+      else if (FlagCalibration && Sbidon.substring(0, 4).toInt() > 0 && Sbidon.substring(0, 4).toInt() <= 10000) {
         // si Calibration en cours et valeur entre 0 et 5000
         Serial.println(Sbidon.substring(0, 4));
         /* calcul nouveau coeff */
