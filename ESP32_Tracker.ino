@@ -1,49 +1,30 @@
+/*18/09/2024
+  Version LTE-M
+  SIM7000G
+
+  TinyGsmClient.h
+  librairie TinyGSM revue PhC
+
+  A FAIRE
+  inclure les modifications de la version 10.11.5 vers 
+  version 0.12.0 revue PhC
+
+  */
 
 /* A finir
 Alarme MQTT, GPRS,GPS
 ismqttconnect?
 senddata
+*/
 
+/*
+Compilation ESP32 ???? ESP32 2.0.0
+Arduino IDE 1.8.19 :  74%, 46768 14% sur PC
+Arduino IDE 1.8.19 :  74%,  14% sur raspi
 */
 
 
-
-
-
-/* Tracker GPRS MQTT 
-  Ph Corbel 31/01/2020
-
-  ESP32+SIM7600G Single board LILYGO
-  https://fr.aliexpress.com/item/1005001705250713.html?gatewayAdapt=glo2fra
-  https://www.lilygo.cc/products/t-sim7600?variant=42358717972661
-
-  V109 4G LILYGO
-
-  Compilation ESP32 Dev module,default,80MHz, ESP32 1.0.6
-  Arduino IDE 1.8.16 : 980918 74%, 46768 14% sur PC
-  Arduino IDE 1.8.16 :  74%,  14% sur raspi
-
-  V108 installé Tracker 63165
-  securisation mise à l'heure si GPS demarrage tardif
-  course fantaisiste à l'arret, memorisation du dernier course si vitesse <1
-
-  V 107 externalisation données
-*/
-
-/* A faire
-  securiser lancement modem
-  (fait a tester)
-
-  sms majsoft par GPRS a debugger, read crc faux sur fichier reel, ok avec test?
-  arret telechargement apres 1842s 78% du fichier
-
-*/
-
-/* TinyGsmClient.h
-  librairie TinyGSM revue PhC
-*/
-
-#define TINY_GSM_MODEM_SIM7600
+#define TINY_GSM_MODEM_SIM7000
 
 #include <Arduino.h>
 #include "utilities.h"
@@ -75,7 +56,7 @@ senddata
 // #define TINY_GSM_YIELD() { delay(2); } dejà defini dans TinyGsmCommon.h
 #define TINY_GSM_USE_GPRS true
 // #define TINY_GSM_USE_WIFI false
-#define GSM_PIN "1234"
+// #define GSM_PIN "1234"
 
 String  webpage = "";
 #define ServerVersion "1.0"
@@ -206,8 +187,8 @@ void setup() {
     config.tlent            = 15; // secondes
     config.vtransition      = 2;       // kmh
     config.timeoutWifi      = 10 * 60;
-    String temp             = "TPCF_63000";
-    String tempapn          = "sl2sfr";//"free"
+    String temp             = "TPCF_X4500";
+    String tempapn          = "eapn1.net";//"sl2sfr";//"free"
     String tempUser         = "";
     String tempPass         = "";
     config.hete             = 2;
@@ -233,10 +214,10 @@ void setup() {
   Serial.print("Initializing modem...");
   Serial.println(modem_on());
 
-  while(!modem.init(GSM_PIN)){
-    delay(1000);
-    if(millis() - debut > 60000) break;
-  }
+  // while(!modem.init(GSM_PIN)){
+  //   delay(1000);
+  //   if(millis() - debut > 60000) break;
+  // }
 
   Serial.print("Modem Info: ");
   Serial.println(modem.getModemInfo());
@@ -408,19 +389,19 @@ void Acquisition() {
     OuvrirFichierCalibration(); // patch relecture des coeff perdu
   }
   // verification index new SMS en attente(raté en lecture directe)
-  int smsnum = modem.newMessageIndex(0); // verifie index arrivée sms, -1 si pas de sms
-  Serial.print(F("Index last SMS = ")), Serial.println (smsnum);
+  // A Finir int smsnum = modem.newMessageIndex(0); // verifie index arrivée sms, -1 si pas de sms
+  // Serial.print(F("Index last SMS = ")), Serial.println (smsnum);
 
-  if (smsnum > 0) {	// index du SMS en attente
-    // il faut les traiter
-    traite_sms(smsnum);// 51 demande traitement de tous les SMS en attente
-  } else if(smsnum == 0){
-    traite_sms(smsnum);// demande traitement du SMS en attente
-  }
-  else if (smsnum < 0 && FlagReset) { // on verifie que tous les SMS sont traités avant Reset
-    FlagReset = false;
-    ResetHard();					//	redemarrage ESP
-  }
+  // if (smsnum > 0) {	// index du SMS en attente
+  //   // il faut les traiter
+  //   traite_sms(smsnum);// 51 demande traitement de tous les SMS en attente
+  // } else if(smsnum == 0){
+  //   traite_sms(smsnum);// demande traitement du SMS en attente
+  // }
+  // else if (smsnum < 0 && FlagReset) { // on verifie que tous les SMS sont traités avant Reset
+  //   FlagReset = false;
+  //   ResetHard();					//	redemarrage ESP
+  // }
 
   VAlim         = map(adc_mm[0] / nSample, 0, 4095, 0, CoeffTension[0]);
   VBatterieProc = map(adc_mm[1] / nSample, 0, 4095, 0, CoeffTension[1]);
@@ -523,21 +504,22 @@ void envoie_alarme() {
 //---------------------------------------------------------------------------
 void envoieGroupeSMS(byte grp) {
   generationMessage();
-  for (byte Index = 1; Index < 10; Index++) {		// Balayage des Num Tel Autorisés=1 dans Phone Book
-    Phone = {"",""};
-    if(modem.readPhonebookEntry(&Phone, Index)){
-      Serial.print(Index),Serial.print(","),Serial.println(Phone.number);
-      if(Phone.number.length() > 0){
-        if (grp == 1){	// grp = 1 message liste restreinte
-        // rien
-        } else {	// grp = 0, message à tous
-          sendSMSReply(Phone.number , true);
-        }        
-      } else {
-        Index = 10;
-      }
-    }
-  }
+  // A Finir 
+  // for (byte Index = 1; Index < 10; Index++) {		// Balayage des Num Tel Autorisés=1 dans Phone Book
+  //   Phone = {"",""};
+  //   if(modem.readPhonebookEntry(&Phone, Index)){
+  //     Serial.print(Index),Serial.print(","),Serial.println(Phone.number);
+  //     if(Phone.number.length() > 0){
+  //       if (grp == 1){	// grp = 1 message liste restreinte
+  //       // rien
+  //       } else {	// grp = 0, message à tous
+  //         sendSMSReply(Phone.number , true);
+  //       }        
+  //     } else {
+  //       Index = 10;
+  //     }
+  //   }
+  // }
   Serial.println(message);
 }
 //---------------------------------------------------------------------------
@@ -559,11 +541,12 @@ void traite_sms(int index) {
     sms = false;
     smsstruct.message = messagetest;
   } else {
-    if (!modem.readSMS(&smsstruct,index)){
-        Serial.print(F("Didn't find SMS message in slot!"));
-        Serial.println(index);
-        // continue;	//	Next k
-    }
+    // A Finir 
+    // if (!modem.readSMS(&smsstruct,index)){
+    //     Serial.print(F("Didn't find SMS message in slot!"));
+    //     Serial.println(index);
+    //     // continue;	//	Next k
+    // }
     if(! Cherche_N_PB(smsstruct.sendernumber)){
       Serial.println(F("Appelant inconnu"));
     } else {
@@ -627,12 +610,13 @@ void traite_sms(int index) {
         // on efface la ligne sauf la 1 pour toujours garder au moins un numéro
         if ((i != 1) && (smsstruct.message.indexOf(F("efface")) == 5 || smsstruct.message.indexOf(F("EFFACE")) == 5 )) {
           efface = true;
-          bool ok = modem.deletePhonebookEntry(i);
-          if (ok) {
-            message += "entree PB effacee";
-          } else {
-            message += "erreur efface entree PB";
-          }
+          // A Finir 
+          // bool ok = modem.deletePhonebookEntry(i);
+          // if (ok) {
+          //   message += "entree PB effacee";
+          // } else {
+          //   message += "erreur efface entree PB";
+          // }
           goto fin_tel;
         }
       }
@@ -663,11 +647,12 @@ fin_tel:
       else {
         if (!efface) {
           bool ok = false;
-          if (indexreplace == 0) {
-            ok = modem.addPhonebookEntry(newnumero, newnom); //ecriture dans PhoneBook
-          } else {
-            ok = modem.addPhonebookEntry(newnumero, newnom, indexreplace); //ecriture dans PhoneBook
-          }
+          // A Finir 
+          // if (indexreplace == 0) {
+          //   ok = modem.addPhonebookEntry(newnumero, newnom); //ecriture dans PhoneBook
+          // } else {
+          //   ok = modem.addPhonebookEntry(newnumero, newnom, indexreplace); //ecriture dans PhoneBook
+          // }
           Alarm.delay(100);
           if (ok) {
             message += "Nouvelle entree Phone Book";
@@ -681,15 +666,16 @@ fin_tel:
     else if (smsstruct.message.indexOf("LST") == 0) {	//	Liste des Num Tel
       for (int idx = 1; idx < 10; idx ++) {
         Phone = {"",""};
-        if(modem.readPhonebookEntry(&Phone, idx)){
-        message += String(idx) + ":";
-        message += Phone.number;
-        message += ",";
-        message += Phone.text;
-        message += fl;
-        }else{
-          idx = 11;
-        }
+        // A Finir 
+        // if(modem.readPhonebookEntry(&Phone, idx)){
+        // message += String(idx) + ":";
+        // message += Phone.number;
+        // message += ",";
+        // message += Phone.text;
+        // message += fl;
+        // }else{
+        //   idx = 11;
+        // }
       }
       sendSMSReply(smsstruct.sendernumber, sms);
     }
@@ -1106,7 +1092,7 @@ fin_tel:
         String _temp = F("+CCLK=\"");
         _temp += mytime + "\"\r\n";
         // Serial.print(_temp);
-        modem.send_AT(_temp);
+        // A finir modem.send_AT(_temp);
         Alarm.delay(100);
         MajHeure(true);			// mise a l'heure forcée
       }
@@ -1249,7 +1235,7 @@ fin_tel:
           delay(1000);
         }
       }
-      message += String(modem.send_AT(F("+CNMP?")));
+      // A finir message += String(modem.send_AT(F("+CNMP?")));
       sendSMSReply(smsstruct.sendernumber, sms);
     }
     else if (smsstruct.message.indexOf(F("SENDAT")) == 0){
@@ -1258,7 +1244,7 @@ fin_tel:
       // attention DANGEREUX pas de verification!
       if (smsstruct.message.indexOf(char(61)) == 6) {
         String CdeAT = smsstruct.message.substring(7, smsstruct.message.length());
-        message += String(modem.send_AT(CdeAT));
+        // A finir message += String(modem.send_AT(CdeAT));
         sendSMSReply(smsstruct.sendernumber, sms);
       }
     }
@@ -1561,11 +1547,11 @@ void EffaceSMS(int s) {
   bool err;
   byte n = 0;
   do {
-    err = modem.deleteSmsMessage(s);
+    // A finir err = modem.deleteSmsMessage(s);
     n ++;
     Serial.print(F("resultat del Sms "));	Serial.println(err);
     if (n > 10) { // on efface tous si echec
-      err = modem.deleteSmsMessage(0,4);// au cas ou, efface tous les SMS envoyé/reçu
+      // A finir err = modem.deleteSmsMessage(0,4);// au cas ou, efface tous les SMS envoyé/reçu
       Serial.print(F("resultat delall Sms "));	Serial.println(err);
       break;
     }
@@ -2000,14 +1986,15 @@ void Tel_listPage() {
   // if (gsm) {
   for (int idx = 1; idx < 10; idx ++) {
     Phone = {"",""};
-    if(modem.readPhonebookEntry(&Phone, idx)){
-      webpage += F("<tr>");
-      webpage += F("<td>"); webpage += String(Phone.text); webpage += F("</td>");
-      webpage += F("<td>"); webpage += String(Phone.number); webpage += F("</td>");
-      webpage += F("</tr>");
-    } else{
-      idx = 11;
-    }
+    // A finir
+    // if(modem.readPhonebookEntry(&Phone, idx)){
+    //   webpage += F("<tr>");
+    //   webpage += F("<td>"); webpage += String(Phone.text); webpage += F("</td>");
+    //   webpage += F("<td>"); webpage += String(Phone.number); webpage += F("</td>");
+    //   webpage += F("</tr>");
+    // } else{
+    //   idx = 11;
+    // }
   }
   webpage += F("</table><br>");
   append_page_footer();
@@ -2317,43 +2304,43 @@ void sauvConfig() { // sauve configuration en EEPROM
 
 //---------------------------------------------------------------------------
 void sendSMSReply(String num , bool sms) {
-  int pseq = 0;
-  // si sms=true Envoie SMS, sinon Serialprint seulement
-  if (sms) {
-    Serial.print(F("SMS Sent "));
-    if(message.length() > 150){ // decoupage sms en nseq parties
-      int nseq = message.length()/150;
-      if(nseq * 150 < message.length()){
-        nseq += 1;
-      }
-      int fin = 0;
-      for (byte i = 0; i < nseq;i++){
-        if((i+1)*150 > message.length()){
-          fin = message.length();
-        } else {
-          fin = (i+1)*150;
-        }
-        // Serial.print("seq"),Serial.print(i+1),Serial.print(":"),Serial.print(i*150),Serial.print(":"),Serial.print(fin),Serial.println(":"),Serial.println(message.substring((i*150),fin));
+  // int pseq = 0;
+  // // si sms=true Envoie SMS, sinon Serialprint seulement
+  // if (sms) {
+  //   Serial.print(F("SMS Sent "));
+  //   if(message.length() > 150){ // decoupage sms en nseq parties
+  //     int nseq = message.length()/150;
+  //     if(nseq * 150 < message.length()){
+  //       nseq += 1;
+  //     }
+  //     int fin = 0;
+  //     for (byte i = 0; i < nseq;i++){
+  //       if((i+1)*150 > message.length()){
+  //         fin = message.length();
+  //       } else {
+  //         fin = (i+1)*150;
+  //       }
+  //       // Serial.print("seq"),Serial.print(i+1),Serial.print(":"),Serial.print(i*150),Serial.print(":"),Serial.print(fin),Serial.println(":"),Serial.println(message.substring((i*150),fin));
       
-        Serial.print(F("sms part :")),Serial.print(i+1),Serial.println(message.substring(0,pseq));
-        if (!modem.sendSMS_Multi(num,message.substring((i*150),fin),i+1,nseq)) {
-          Serial.println(F("Failed"));
-        } else {
-          Serial.println(F("OK"));
-        }
-        delay(10);
-      }
-    } else { // 1 seul sms
-      if (!modem.sendSMS(num,message)) {
-        Serial.println(F("Failed"));
-      } else {
-        Serial.println(F("OK"));
-      }
-    }
-  }
-  Serial.println(F("****************************"));
-  Serial.println(message);
-  Serial.println(F("****************************"));
+  //       Serial.print(F("sms part :")),Serial.print(i+1),Serial.println(message.substring(0,pseq));
+  //       if (!modem.sendSMS_Multi(num,message.substring((i*150),fin),i+1,nseq)) {
+  //         Serial.println(F("Failed"));
+  //       } else {
+  //         Serial.println(F("OK"));
+  //       }
+  //       delay(10);
+  //     }
+  //   } else { // 1 seul sms
+  //     if (!modem.sendSMS(num,message)) {
+  //       Serial.println(F("Failed"));
+  //     } else {
+  //       Serial.println(F("OK"));
+  //     }
+  //   }
+  // }
+  // Serial.println(F("****************************"));
+  // Serial.println(message);
+  // Serial.println(F("****************************"));
 }
 //---------------------------------------------------------------------------
 // force = true, force mise à l'heure systeme sur heure modem, meme si defaut NTP
@@ -2549,15 +2536,15 @@ int modem_on() {
 //---------------------------------------------------------------------------
 // Cherche numero dans PB
 bool Cherche_N_PB(String numero){
-  for (byte idx = 1; idx < 10; idx++){
-    Phone = {"",""};
-    if(modem.readPhonebookEntry(&Phone, idx)){
-      if(Phone.number == numero){
-        Serial.print(F("Nom :")), Serial.println(Phone.text);
-        return true;
-      }
-    }// else { idx = 10;}    
-  }
+  // for (byte idx = 1; idx < 10; idx++){
+  //   Phone = {"",""};
+  //   // A Finir if(modem.readPhonebookEntry(&Phone, idx)){
+  //     if(Phone.number == numero){
+  //       Serial.print(F("Nom :")), Serial.println(Phone.text);
+  //       return true;
+  //     }
+  //   }// else { idx = 10;}    
+  // }
   return false;
 }
 //---------------------------------------------------------------------------
@@ -2571,7 +2558,7 @@ bool SyncHeureModem(int Savetime, bool FirstTime){
       if (compteur > 10){ // 10 tentatives
         if(FirstTime){
           // echec Synchro, force date 01/08/2022 08:00:00, jour toujours circulé
-          modem.send_AT("+CCLK=\"22/08/01,08:00:00+08\"");
+          // A Finir modem.send_AT("+CCLK=\"22/08/01,08:00:00+08\"");
           delay(500);
         }
         return false;
