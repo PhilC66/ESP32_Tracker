@@ -1,0 +1,21 @@
+Liste des commandes SMS Tracker
+
+TEL=
+LST
+ST/ETAT
+SYS
+IMEI
+ID
+TIMERLENT                 10-3600
+TIMERRAPIDE               1-1800
+VITESSEMINI               1-20
+GPRSDATA="apn":"user":"pass" (case sensitive)
+POSITION
+WIFIOFF
+Wifi,ssid,pass (case sensitive)
+TIMEOUTWIFI
+MQTTDATA Parametres MQTTDATA=Serveur:User:Pass:Topic:port, case sensitive pas de : / # space dans user et pass
+TIMESAVING
+MAJHEURE
+
+UPDATE update soft pas encore operationnel
