@@ -35,7 +35,7 @@ senddata
 
 /*
 Compilation ESP32 2.0.17
-Arduino IDE VSCODE : 1114149 85%, 55644 16% sur PC
+Arduino IDE VSCODE : 1116069 85%, 55652 16% sur PC
 Arduino IDE 1.8.19 :  sur raspi
 */
 
