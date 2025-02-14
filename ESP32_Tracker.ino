@@ -27,15 +27,10 @@
 
   */
 
-/* A finir
-Alarme MQTT, GPRS,GPS
-ismqttconnect?
-senddata
-*/
-
 /*
 Compilation ESP32 2.0.17
-Arduino IDE VSCODE : 1116069 85%, 55652 16% sur PC
+avec Flash 4Mo : choisir compilation Minimal SPIFFS (Large APPS with OTA)
+Arduino IDE VSCODE : 1771777 90%, 64504 19% sur PC
 Arduino IDE 1.8.19 :  sur raspi
 */
 
@@ -43,12 +38,17 @@ Arduino IDE 1.8.19 :  sur raspi
 #include <Arduino.h>
 
 String ver     = "V1-00";
-int Magique    = 2;
+int Magique    = 3;
 
 #define LILYGO_SIM7000G // not define for SIM7000G board only
 
 #define TINY_GSM_MODEM_SIM7000
 #define Exploitation           // selection des données serveur dans fichier credentials
+
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 
 #include <Battpct.h>
 #include "defs.h"
@@ -64,6 +64,7 @@ int Magique    = 2;
 #include <SPI.h>
 #include <SD.h>
 #include <Ticker.h>
+#include "Blinker.h"
 // #include <Update.h>               //update
 // #include <CRC32.h>                //update
 #include "passdata.h"
@@ -94,23 +95,25 @@ bool    SPIFFS_present = false;
 #define SD_SCLK             14   // Carte SD
 #define SD_CS               13   // Carte SD
 #define LED_PIN             12
-#define LED_EXTERNE_PIN     22   // Led indicateur vers l'exterieur
+#define LED_EXTERNE_PIN     22   // Led indicateur vers l'exterieur, ON: au lancement, Cli lent: init modem, flash: connecté
 #define PinBattProc         35   // liaison interne carte Lolin32 adc
-#define PinAlim             36   // mesure tension alimentation SOLAR IN
+#define PinVexterne         36   // mesure tension alimentation SOLAR IN ou Chargeur Externe
 #define PinReset            18   // 13   // Reset Hard ESP32
+#define PinVin              39   // mesure tension Vin présente si USB conneté
 #define NTPServer "pool.ntp.org"
 #define uS_TO_S_FACTOR      1000000ULL  /* Conversion factor for micro seconds to seconds */
 #define FORMAT_SPIFFS_IF_FAILED true // format SPIFFS si lecture impossible
+#define ON_TIME_Slow 1.0f        // parametres Blinker
+#define OFF_TIME_Slow 1.0f
+#define ON_TIME_Fast 2.0f
+#define OFF_TIME_Fast 0.1f
 #define nSample (1<<4)                   // nSample est une puissance de 2, ici 16 (4bits)
-unsigned int adc_hist[5][nSample];       // tableau stockage mesure adc, 0 Batt, 1 Proc, 2 USB, 3 24V, 5 Lum
-unsigned int adc_mm[5];                  // stockage pour la moyenne mobile
+unsigned int adc_hist[2][nSample];       // tableau stockage mesure adc, 0 Vexterne, 1 Batterie
+unsigned int adc_mm[2];                  // stockage pour la moyenne mobile
 
 unsigned long debut      = 0;               // pour decompteur temps wifi
 char fileconfig[12]      = "/config.txt";   // fichier en SPIFFS contenant structure config
-char filecalendrier[13]  = "/filecal.csv";  // fichier en SPIFFS contenant le calendrier de circulation
 char filecalibration[11] = "/coeff.txt";    // fichier en SPIFFS contenant les data de calibration
-char filelog[9]          = "/log.txt";      // fichier en SPIFFS contenant le log
-char filelumlut[13]      = "/lumlut.txt";   // fichier en SPIFFS LUT luminosité
 char filePhoneBook[8]    = "/pb.txt";       // fichier contenant liste N°tel autorisé
 
 char PB_list[10][30];                       // PB liste en ram
@@ -121,7 +124,7 @@ bool FlagReset = false;
 byte Accu = 0;                           // accumulateur vitesse(bascule TimerLent/TimerRapide)
 float lat, lon, course, speed;
 long   VBatterieProc    = 0;             // Tension Batterie Processeur
-long   VAlim            = 0;             // Tension Alimentation
+long   VExterne         = 0;             // Tension Alimentation Externe
 String Sbidon 		= "";                  // String texte temporaire
 String Rmessage = "";                    // Receive message
 String message = "";                     // Reponse message envoyé
@@ -135,6 +138,7 @@ bool FlagAlarmeGprs        = false;
 bool FlagAlarmeMQTT        = false;
 bool FlagAlarmeGps         = false;
 bool AlarmeMQTT            = false;
+bool VinPresent            = false;      // Si Vin present inhibe mesure VBatterie
 
 bool FlagLastAlarmeTension = false;
 bool FlagLastAlarmeGprs    = false;
@@ -146,9 +150,13 @@ bool Online                = false; // true si network && Gprs && mqtt && subscr
 bool lastOnline            = false; // memorise dernier etat de Online
 bool flagRcvMQTT           = false; // true si reception MQTT longueur>0, false longueur = 0
 bool FlagSetTime           = false; // flag set time valide
-int CoeffTension[4];                // Coeff calibration Tension
+bool FlagInhibeAlarme      = true;  // Inhibe alarme GPS au démarrage
+int CoeffTension[2];                // Coeff calibration Tension
 int CoeffTensionDefaut     = 7000;  // Coefficient par defaut
 int BlinkerInterval        = 1000;  // ms blinker lent/rapide
+bool deviceConnected = false;       // BLE device
+bool oldDeviceConnected = false;    // BLE device
+bool flagRecu = false;              // BLE message reçu
 
 // See all AT commands, if wanted
 // #define DUMP_AT_COMMANDS
@@ -161,10 +169,7 @@ TinyGsm        modem(debugger);
 TinyGsm        modem(SerialAT);
 #endif
 TinyGsmClient client(modem);
-PhonebookEntry Phone;
-
 PubSubClient mqttClient(client);
-
 WebServer server_wifi(80);
 File UploadFile;
 
@@ -191,6 +196,7 @@ struct  config_t           // Structure configuration sauvée en EEPROM
   bool    sendSMS;         // Autorisation envoie SMS
   bool    logSDcard;       // log sur carte SD
   uint16_t keepAlive;      // Paramètre keep alive de Pubsubclient
+  byte    timeoutBLE;      // Durée du BLE au démarrage
 } ;
 config_t config;
 
@@ -203,19 +209,56 @@ String dataToPublish;   // Holds your field data.
 
 Ticker ADC;                // Lecture des Adc
 
-Ticker Blinker;          // LED externe Clignotant
+Blinker myBlinker(LED_EXTERNE_PIN); // LED externe Clignotant
 
 AlarmId loopPrincipale;    // boucle principale
 AlarmId first;             // premier Send data
 AlarmId Send;              // timer send data
 // AlarmId Svie;              // Signal de Vie
 
+BLEServer* pServer = NULL;;
+BLECharacteristic* pCharacteristic = NULL;
+BLEDescriptor *pDescr;
+BLE2902 *pBLE2902;
+
+// See the following for generating UUIDs:
+// https://www.uuidgenerator.net/
+
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHAR1_UUID          "e3223119-9445-4e96-a4a1-85358c4046a2"
+
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      deviceConnected = true;
+    };
+
+    void onDisconnect(BLEServer* pServer) {
+      deviceConnected = false;
+    }
+};
+
+class CharacteristicCallBack: public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pChar) override { 
+    Rmessage = "";
+    std::string value = pChar->getValue();
+    if (value.length() > 0) {
+      Serial.println("*********");
+      Serial.print("BLE receive: ");
+      for (int i = 0; i < value.length(); i++){
+        Serial.print(value[i]);
+        Rmessage += value[i];
+      }
+      Serial.println();
+      Serial.println("*********");
+      flagRecu = true;
+    }
+  }
+};
+
 //---------------------------------------------------------------------------
 // newtime = "" mise à l'heure NTP
 // newtime = "YY/MM/DD,hh:mm:ss" mise à l'heure reçue
 bool MajHeure(String newtime = "");
-//---------------------------------------------------------------------------
-void Change(bool on);
 //---------------------------------------------------------------------------
 void setup() {
   message.reserve(300); // texte des reponses
@@ -227,6 +270,8 @@ void setup() {
 
   Serial.print("Xtal F:"),Serial.println(getXtalFrequencyMhz());
   Serial.print("CPU  F:"),Serial.println(getCpuFrequencyMhz());
+
+  myBlinker.continuousOn(); // Allumage LED externe
   
   if (!SPIFFS.begin(FORMAT_SPIFFS_IF_FAILED)) { // Format la première fois utilise SPIFFS
     Serial.println(F("SPIFFS initialisation failed..."));
@@ -236,8 +281,6 @@ void setup() {
     Serial.println(F("SPIFFS initialised... file access enabled..."));
     SPIFFS_present = true;
   }
-  pinMode(LED_EXTERNE_PIN, OUTPUT);
-  digitalWrite(LED_EXTERNE_PIN, HIGH);
 
   // Init SD card
   pinMode (SD_SCLK, INPUT_PULLUP); // OBLIGATOIRE
@@ -277,8 +320,6 @@ void setup() {
   init_adc_mm();// initialisation tableau pour adc Moyenne Mobile
   ADC.attach_ms(100, adc_read); // lecture des adc toute les 100ms
 
-  Blinker.attach_ms(BlinkerInterval, Blink); // lancement Blinker lent
-
   /* Lecture configuration file config	 */
   readConfig(); // Lecture de la config
   if (config.magic != Magique) {
@@ -298,7 +339,8 @@ void setup() {
     config.mqttPort         = tempmqttPort;
     config.sendSMS          = false;
     config.logSDcard        = false;
-    config.keepAlive        = 300; // 5mn, IMPERATIF pour réduire conso data    
+    config.keepAlive        = 300; // 5mn, IMPERATIF pour réduire conso data
+    config.timeoutBLE       = 5;   // Timeout BLE au démarrage en minutes
     String temp             = "TPCF_TTX01";
     temp.toCharArray(config.Idchar, 11);
     String tempapn          = "eapn1.net";//"sl2sfr";//"free"
@@ -311,7 +353,6 @@ void setup() {
     tempmqttUserName.toCharArray(config.mqttUserName, (tempmqttUserName.length() + 1));
     tempmqttPass.toCharArray(config.mqttPass, (tempmqttPass.length() + 1));
     copie_Topic();
-
     sauvConfig();
   }
   PrintConfig();
@@ -360,6 +401,8 @@ void setup() {
   
   Ouvrir_PB();                // ouvre le fichier Phone book
 
+  myBlinker.blink(ON_TIME_Slow,OFF_TIME_Slow);; // lancement Led externe Blinker lent
+
   Serial.print(("Waiting for network..."));
   if (!modem.waitForNetwork()) {
     Serial.println(F(" fail"));
@@ -402,20 +445,53 @@ void setup() {
   loopPrincipale = Alarm.timerRepeat(10, Acquisition); // boucle principale 10s
   Alarm.enable(loopPrincipale);
 
-  first = Alarm.timerOnce(60, once); // premier lancement
+  first = Alarm.timerOnce(120, once); // premier message au lancement
   Alarm.enable(first);
 
-  Send = Alarm.timerRepeat(config.tlent, senddata); // send data
+  Send = Alarm.timerRepeat(config.trapide, senddata); // send data
   Alarm.disable(Send);
-  
-  // Svie = Alarm.alarmRepeat(7*3600, SignalVie); // chaque jour 07H00
-  // Alarm.enable(Svie);
-  
-  // Acquisition();
-  // reduire consommation eteindre Wifi et BT
-  WiFi.mode(WIFI_OFF);
-  btStop();
 
+//---------------------------------------------------------------------------
+  // Create the BLE Device
+  String BLEid = "ESP32:" + String(config.Idchar);
+  BLEDevice::init("Tracker");
+    
+  // Create the BLE Server
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  // Create the BLE Service
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+  // Create a BLE Characteristic
+  pCharacteristic = pService->createCharacteristic(
+                      CHAR1_UUID,
+                      BLECharacteristic::PROPERTY_READ   |
+                      BLECharacteristic::PROPERTY_WRITE  |
+                      BLECharacteristic::PROPERTY_NOTIFY
+                    );  
+
+  // Create a BLE Descriptor
+  pBLE2902 = new BLE2902();
+  pBLE2902->setNotifications(true);
+
+  // Add all Descriptors here
+  pCharacteristic->addDescriptor(new BLE2902());
+
+  // After defining the desriptors, set the callback functions
+  pCharacteristic->setCallbacks(new CharacteristicCallBack());
+
+  // Start the service
+  pService->start();
+
+  // Start advertising
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(false);
+  pAdvertising->setMinPreferred(0x0);  // set value to 0x00 to not advertise this parameter
+  BLEDevice::startAdvertising();
+  Serial.println("Waiting a client connection to notify...");
+//---------------------------------------------------------------------------
   Check_Online();
 }
 //---------------------------------------------------------------------------
@@ -425,27 +501,32 @@ void loop() {
     t0 = millis();
     Check_Online();
   }
-  // Gestion LED externe
-  if(Online){
-    // FastBlink
-    
-  } else {
-    // SlowBlink
-
-  }
   recvOneChar(); // Capture reception liaison serie locale
-  // receiveBLE();  // Capture reception depuis BT
+
+  static unsigned int t1 = millis(); // timer BLE au démarrage seulement
+  if(millis() - t1 < config.timeoutBLE*60*1000){
+    receiveBLE();  // Capture reception depuis BT
+  } else {
+    // reduire consommation eteindre Wifi et BT
+    WiFi.mode(WIFI_OFF);
+    btStop();
+    FlagInhibeAlarme = false; // autorise Alarme GPS...
+  }
   
   if(Online){
     mqttClient.loop(); // Call the loop to maintain connection to the server.
   }
 
+  if(analogRead(PinVin) > 2000){ // Si Vin present USB connecter, inhiber mesure Batterie
+    VinPresent = true;
+  } else {
+    VinPresent = false;
+  }
   ArduinoOTA.handle();
   Alarm.delay(0);
 }
 //---------------------------------------------------------------------------
 void Acquisition() {
-  bool first = true;
   static float lastlon = 0;
   static float lastlat = 0;
 
@@ -455,24 +536,13 @@ void Acquisition() {
     StartStopAlarme(true);
   }
 
-  Serial.println(displayTime());
-
-  opmessage = displayTime() + fl;
+  opmessage = displayTime(0) + fl;
   opmessage += modem.getOperator();
   opmessage += fl + read_RSSI();
   // IPAddress local = modem.localIP();
   // opmessage += ", Local IP:" + local.toString();
   logmessage();
 
-  static byte lastminute = minute();
-  // if(minute() == 0 && minute() != lastminute){ // test
-  // lastminute = minute();
-  //   opmessage = displayTime() + fl;
-  //   opmessage += modem.send_AT("+CPSI?");
-  //   Publication();
-  // } else {
-  //   lastminute = minute();
-  // }
   if (CoeffTension[0] == 0 || CoeffTension[1] == 0){// || CoeffTension[2] == 0 || CoeffTension[3] == 0) {
     OuvrirFichierCalibration(); // patch relecture des coeff perdu
   }
@@ -480,76 +550,45 @@ void Acquisition() {
   if (Online){
     // verification index new SMS en attente(raté en lecture directe)
     // Si SMS reçu , lire en boucle les sms ReadSMS(smsnum)
-    int smsnum = modem.newMessageIndex(0); // verifie index arrivée sms, -1 si pas de sms
-    opmessage = "Index last SMS = " + String(smsnum);
-    logmessage();
+    smsnum = modem.newMessageIndex(0); // verifie index arrivée sms, -1 si pas de sms
+    if (smsnum >= 0) {	// index du SMS en attente
+      opmessage = "Index last SMS = " + String(smsnum);
+      logmessage();
+    }
+    if (smsnum >= 0) {	// index du SMS en attente
+      // il faut les traiter
+      ReadSMS(smsnum);// Lecture et traitement de tous les SMS en attente
+    }
   }
-  if (smsnum >= 0) {	// index du SMS en attente
-    // il faut les traiter
-    ReadSMS(smsnum);// Lecture et traitement de tous les SMS en attente
-  }
-  else if (smsnum < 0 && FlagReset) { // on verifie que tous les SMS sont traités avant Reset
+  if (smsnum < 0 && FlagReset) { // on verifie que tous les SMS sont traités avant Reset
     FlagReset = false;
     ResetHard();					//	redemarrage ESP
   }
 
-  Serial.print("tension proc = "), Serial.print(VBatterieProc / 1000.0, 2), Serial.print("V");
-  Serial.print("; tension alim = "), Serial.print(VAlim / 1000.0, 2), Serial.println("V");
-
+  Serial.print("tension proc = "), Serial.print(VBatterieProc / 1000.0, 2), Serial.print("V ");
+  Serial.print(BattLipopct(VBatterieProc)), Serial.print("%");
+  Serial.print("; tension alim externe = "), Serial.print(VExterne / 1000.0, 2), Serial.println("V");
+  
   static byte nalaAlim = 0;
   static byte nRetourTension = 0;
-  // if (VAlim < 3300) {
-  //   if (nalaAlim ++ == 10) {
-  //     FlagAlarmeTension = true;
-  //     nalaAlim = 0;
-  //   }
-  // }
-  // else if (VAlim > 4500) { // A Finir
-  //   nRetourTension ++;
-  //   if (nRetourTension == 4) {
-  //     FlagAlarmeTension = false;
-  //     nRetourTension = 0;
-  //   }
-  // }
-  // else {
-  //   if (nalaAlim > 0)nalaAlim --;
-  // }
-  FlagAlarmeTension = false;
-
-  // if (config.tracker){
-    // static byte nalaGprs = 0;
-    // if (!modem.isGprsConnected()) {
-    //   modem.gprsConnect(config.apn, config.gprsUser, config.gprsPass);
-    //   if (nalaGprs ++ == 10) {
-    //     FlagAlarmeGprs = true;
-    //     nalaGprs = 0;
-    //   }
-    // } else {
-    //   // if (nalaGprs > 0){
-    //   //   nalaGprs --;
-    //   //   FlagAlarmeGprs = false;
-    //   // }
-    //   nalaGprs = 0;
-    //   FlagAlarmeGprs = false;
-    // }
-    // static byte nalaMQTT = 0;
-    // if (!mqttClient.connected()) {
-    //   if (nalaMQTT ++ >= 10) {
-    //     FlagAlarmeMQTT = true;
-    //     nalaMQTT = 0;
-    //   }
-    // } else {
-    //   // if (nalaMQTT > 0){
-    //   //   nalaMQTT --;
-    //   //   FlagAlarmeMQTT = false;
-    //   // }
-    //   nalaMQTT = 0;
-    //   FlagAlarmeMQTT = false;
-    // }
-  // } else {
-  //   FlagAlarmeGprs = false;
-  //   FlagAlarmeMQTT = false;
-  // }
+  if(!VinPresent){                          // pas de Vin autorise mesure VBatterie
+    if (BattLipopct(VBatterieProc) < 10) {
+      if (nalaAlim ++ == 10) {
+        FlagAlarmeTension = true;
+        nalaAlim = 0;
+      }
+    }
+    else if (BattLipopct(VBatterieProc) > 80) {
+      nRetourTension ++;
+      if (nRetourTension == 4) {
+        FlagAlarmeTension = false;
+        nRetourTension = 0;
+      }
+    }
+    else {
+      if (nalaAlim > 0)nalaAlim --;
+    }
+  }
   static byte nalaGps = 0;
   if (config.tracker){
     if (!decodeGPS()) {
@@ -563,7 +602,9 @@ void Acquisition() {
         #endif
         modem.enableGPS();
         Alarm.delay(1000);
-        FlagAlarmeGps = true;
+        if(!FlagInhibeAlarme){ // Inhibe Alarme GPS au lancement
+          FlagAlarmeGps = true;
+        }
         nalaGps = 0;
         logmessage();
       }
@@ -574,6 +615,8 @@ void Acquisition() {
         FlagAlarmeGps = false;
       }
     }
+    // Serial.print("NAlaGPS:"),Serial.println(nalaGps);
+    // Serial.print("FlagAlarmeGps:"),Serial.println(FlagAlarmeGps);
     gereCadence();
     Serial.print("distance:"), Serial.println(calc_dist(lat, lon, lastlat, lastlon), 5);
     lastlat = lat;
@@ -582,7 +625,7 @@ void Acquisition() {
   envoie_alarme();
 
   digitalWrite(LED_PIN,LOW);
-  Alarm.delay(100);
+  Alarm.delay(50);
   digitalWrite(LED_PIN,HIGH);
 }
 //---------------------------------------------------------------------------
@@ -605,25 +648,25 @@ void Check_Online(){
   }
   if (net_status && gprs_status){
     if (!mqttClient.connected()){ // mqtt pas connecté, mqtt connect et on relance subscribe
-      if (mqttConnect()){ // (re)Connect if MQTT client is not connected.
+      if (mqttConnect()){         // (re)Connect if MQTT client is not connected.
         if (mqttSubscribe(0) == true) {
           opmessage = "Subscribed";
           logmessage();
           mqtt_status = true;
         }
       }
-    } else { // si mqqt connecté, suppose subscribe ok
+    } else {                      // si mqqt connecté, suppose subscribe ok
       mqtt_status = true;
     }
   }
 
   if(net_status && gprs_status && mqtt_status){ // we are Online
     Online = true;
-    Change(true);
+    myBlinker.blink(OFF_TIME_Fast,ON_TIME_Fast);
   } else {
     Online = false;
     lastOnline = false;
-    Change(false);
+    myBlinker.blink(OFF_TIME_Slow,ON_TIME_Slow);
   }
 
   if (Online && !lastOnline){
@@ -636,7 +679,7 @@ void Check_Online(){
     }
   }
 
-  opmessage = displayTime() + fl;
+  opmessage = displayTime(0) + fl;
   opmessage += "Online,res,gprs,mqtt,nRegFault :" + String(Online) + ":" + String(net_status) + ":" + String(gprs_status) + ":" + String(mqtt_status) + ":" + String(cptRegStatusFault) + fl;
   
   logmessage();
@@ -648,8 +691,10 @@ void Check_Online(){
       NbrResetModem +=1;
       opmessage = "Reset modem suite Reg status fault" + String(cptRegStatusFault);
       logmessage();
-      modem.send_AT(F("+CFUN=1,1"));
-      delay(10000);
+      if(modem.setPhoneFunctionality(1,1)){// CFUN=1,1 full functionality, reset online mode
+        modem.setNetworkMode(38);  // Network Mode LTE
+        modem.setPreferredMode(1); // Mode CAT-M
+      }
     }
   } else {
     cptRegStatusFault = 0;// reset compteur
@@ -660,7 +705,7 @@ void once() {
   Serial.println("Premier lancement");
   if(config.tracker){
     Accu = 255; // forcer plusieurs envoie au lancement
-    Alarm.write(Send, config.tlent);
+    Alarm.write(Send, config.trapide);
     senddata();
   }
 }
@@ -680,13 +725,6 @@ void senddata() {
     logmessage();
   }
 }
-//---------------------------------------------------------------------------
-// void Publication(){
-//   if(Online){
-//     bool rep = mqttClient.publish(config.sendTopic[1], opmessage.c_str(), true);// retain
-//     Serial.print("publication :"), Serial.println(rep);
-//   }
-// }
 //---------------------------------------------------------------------------
 void envoie_alarme() {
   /* determine si un SMS appartition/disparition Alarme doit etre envoyé */
@@ -709,7 +747,7 @@ void envoie_alarme() {
     FlagLastAlarmeGps = FlagAlarmeGps;
   }
   if (SendEtat) { 							// si envoie Etat demandé
-    envoieGroupeMessage(false, true);	 // pasVie, Serveur
+    // envoieGroupeMessage(false, true);	 // pasVie, Serveur
     envoieGroupeMessage(false, false); // pasVie, User
     SendEtat = false;						// efface demande
   }
@@ -741,9 +779,6 @@ void envoieGroupeMessage(bool vie, bool Serveur) {
   //   }
   // }
   }
-  // A Finir
-  // envoyer vers BLE
-
   Serial.println(message);
   Envoyer_MQTT(Serveur);
 }
@@ -791,7 +826,7 @@ void traite_sms(String Origine) {
   
 
   messageId(); // Preparation message reponse
-  if (!(Rmessage.indexOf(F("TEL")) == 0 || Rmessage.indexOf(F("tel")) == 0 || Rmessage.indexOf(F("Tel")) == 0
+  if ( !(Rmessage.indexOf(F("TEL")) == 0 || Rmessage.indexOf(F("tel")) == 0 || Rmessage.indexOf(F("Tel")) == 0
       || Rmessage.indexOf(F("Wifi")) == 0 || Rmessage.indexOf(F("GPRSDATA")) > -1 || Rmessage.indexOf(F("MQTTDATA")) > -1 
       || Rmessage.indexOf(F("MQTTSERVEUR")) > -1)) {
     Rmessage.toUpperCase();    // passe tout en Maj sauf si ci dessus
@@ -799,18 +834,32 @@ void traite_sms(String Origine) {
   }
 
   if (Rmessage.indexOf(F("ID=")) == 0) {			//	Id= nouvel Id
-    String temp = Rmessage.substring(3);
-    Serial.println(Rmessage),Serial.println(temp);
-    if (temp.length() > 0 && temp.length() < 11) {
+    String temp = Rmessage.substring(3,13);
+    // Serial.println(Rmessage),Serial.println(temp);
+    if (temp.length() == 10) {
       Id = "";
       temp.toCharArray(config.Idchar, 11);
-      sauvConfig();															// sauvegarde en EEPROM
       Id = String(config.Idchar);
       Id += fl;
+      
+      mqttSubscribe(1); // unsubscribe
+      mqttClient.disconnect();
+      copie_Topic();                            // maj des topics
+      sauvConfig();															// sauvegarde en EEPROM
+      mqttConnect();
+      mqttSubscribe(0); // subscribe
+    
+      messageId();
+      message += F("Nouvel Id");
+      message += fl + "Redemarrage necessaire";
+      sendReply(Origine);
+      delay(2000);
+      FlagReset = true; // reset prochaine boucle
+    } else {
+      messageId();
+      message += "Format incorrect";
+      sendReply(Origine);
     }
-    messageId();
-    message += F("Nouvel Id");
-    sendReply(Origine);
   }
   else if (Rmessage.indexOf(F("SPEED")) >= 0) { // debug SPEED=xx force envoyé position
     if ((Rmessage.indexOf(char(61))) == 5) {
@@ -885,7 +934,6 @@ fin_tel:
     }
     else {
       if (!efface) {
-        bool ok = false;
         String bidon = newnumero + ";" + newnom;
         if(newPB){ // Nouvelle ligne
           strcpy(PB_list[lastPBline + 1] , bidon.c_str());
@@ -913,7 +961,7 @@ fin_tel:
     }
     sendReply(Origine);
   }
-  else if (Rmessage.indexOf(F("ETAT")) == 0 || Rmessage.indexOf(F("ST")) == 0) {			// "ETAT? de l'installation"
+  else if (Rmessage.indexOf(F("ETAT")) == 0 || Rmessage.indexOf(F("ST")) == 0) { // "ETAT? de l'installation"
     generationMessage();
     sendReply(Origine);
   }
@@ -927,15 +975,16 @@ fin_tel:
       message += modem.getOperator() + fl;  // Operateur
     }
     message += read_RSSI() + fl;
-    message += "V SIM7600 = ";
+    message += "V SIM7000 = ";
     message	+= String(modem.getBattVoltage());
     message += " mV, ";
-    // message += String(modem.getBattPercent()) + "%" + fl;
-
-    message += ("Ver:") + ver + fl;
-
-    message += F("Valim Proc = ");
-    message += String(VBatterieProc/1000.0,2) + "V";
+    message += fl;
+    message += ("Ver: ") + ver + fl;
+    if(!VinPresent){                       // si VUSB preset inhibe mesure Batterie
+      message += F("V Batterie = ");
+      message += String(VBatterieProc/1000.0,2) + "V, ";
+      message += String(BattLipopct(VBatterieProc)) + "%";
+    }
 
     sendReply(Origine);
   }
@@ -1004,9 +1053,7 @@ fin_tel:
       else if (i == 0) {
         config.tracker = false;
         sauvConfig();																// sauvegarde en EEPROM
-        // ArretLocalisation();
         Alarm.disable(Send);
-        // modem.gprsDisconnect();
       }
     }
     generationMessage();
@@ -1138,7 +1185,6 @@ fin_tel:
         strncpy(config.mqttServer,   mqttdata["serveur"], 26);
         strncpy(config.mqttUserName, mqttdata["user"],    11);
         strncpy(config.mqttPass,     mqttdata["pass"],    16);
-        // strncpy(config.writeTopic,   mqttdata["topic"],   16);
         config.mqttPort            = mqttdata["port"];
         sauvConfig();													// sauvegarde en EEPROM
       }
@@ -1181,7 +1227,6 @@ fin_tel:
         message += "Serveur:" + String(config.mqttServer) + fl;
         message += "User:"    + String(config.mqttUserName) + fl;
         message += "Pass:"    + String(config.mqttPass) + fl;
-        // message += "Topic:"   + String(config.writeTopic) + fl;
         message += "Port:"    + String(config.mqttPort) + fl;
       }
       else {
@@ -1190,7 +1235,6 @@ fin_tel:
         MQTTDATA["serveur"] = config.mqttServer;
         MQTTDATA["user"]    = config.mqttUserName;
         MQTTDATA["pass"]    = config.mqttPass;
-        // MQTTDATA["topic"]   = config.writeTopic;
         MQTTDATA["port"]    = config.mqttPort;
         Sbidon = "";
         doc.shrinkToFit();  // optional
@@ -1253,7 +1297,7 @@ fin_tel:
         config.keepAlive = rep;
         sauvConfig();
         FlagReset = true;
-        message += "sera applique apres redemarrage dans 10s";
+        message += "Au prochain demarrage";
         message += fl;
       }
     }
@@ -1273,7 +1317,7 @@ fin_tel:
     }
     message += F("MQTTserveur =");
     message += String(config.mqttServer);
-    message += F("\n au prochain demarrage");
+    message += F("\n Au prochain demarrage");
     sendReply(Origine);
   }
   else if (Rmessage.indexOf(F("GPRSDATA")) > -1) {
@@ -1339,7 +1383,7 @@ fin_tel:
     }
     if (!erreur) {
       if (formatsms) {
-        message += "Sera pris en compte au prochain demarrage\nOu envoyer RST maintenant";
+        message += "Au prochain demarrage\nOu envoyer RST maintenant";
         message += fl;
         message += F("Parametres GPRS \"apn\":\"user\":\"pass\"");
         message += fl + "\"";
@@ -1373,6 +1417,11 @@ fin_tel:
     message += F("IMEI = ");
     message += modem.getIMEI();
     message += fl;
+    sendReply(Origine);
+  }
+  else if (Rmessage.indexOf(F("CCID")) > -1) {
+    message += F("CCID = ");
+    message += modem.getSimCCID();
     sendReply(Origine);
   }
   else if (Rmessage.indexOf(F("TIMEOUTWIFI")) > -1) { // Parametre Arret Wifi
@@ -1411,23 +1460,23 @@ fin_tel:
     // ConnexionServeur(smsstruct.sendernumber, sms, index);
     // sms de reponse sera envoyé par routine
   }
-  else if (Rmessage.indexOf(F("MAJHEURE")) == 0) {	//	forcer mise a l'heure V2-19
-    // A Finir
-    MajHeure(true);
-    // if (Origine == "SMS"){// || Origine == "MQTT" || Origine == "BLE") {
-    //   String mytime = smsstruct.timestamp.substring(0, 20);
-    //   Serial.print(F("heure du sms:")),Serial.println(mytime);
-    //   String _temp = F("+CCLK=\"");
-    //   _temp += mytime + "\"\r\n";
-    //   Serial.print(_temp);
-    //   modem.send_AT(_temp);
-    //   Alarm.delay(100);
-    //   MajHeure(true);			// mise a l'heure forcée
-    // }
-    // else {
-    //   message += F("pas de mise à l'heure en local");
-    // }
-    
+  else if (Rmessage.indexOf(F("MAJHEURE")) == 0) {	//	forcer mise a l'heure
+    messageId();
+    if (Rmessage.indexOf(char(61)) == 8) {
+      Sbidon = Rmessage.substring(9,Rmessage.length());      
+      if (Sbidon.length()== 17){
+        if (MajHeure(Sbidon)){	// mise a l'heure demandée
+          messageId();
+          message += "Mise à l'heure OK";
+        } else {
+          message += "Erreur mise à l'heure";
+        }
+      }
+    } else {
+      MajHeure("");			// mise a l'heure NTP
+      messageId();
+      message += "Mise à l'heure NTP";
+    }  
     sendReply(Origine);
   }
   else if (Rmessage.indexOf(F("POSITION")) == 0) {	// demande position
@@ -1465,10 +1514,10 @@ fin_tel:
         recoit message "CALIBRATION=.X"
         entrer mode calibration
         Selection de la tension à calibrer X
-        X = 1 Valim : PinAlim : CoeffTension1
-        X = 2 VProc : PinBattProc : CoeffTension2
-        X = 3 NC, VUSB : PinBattUSB : CoeffTension3
-        X = 4 NC, Tension24 : Pin24V : CoeffTension4
+        X = 1 Vexterne  : PinVexterne : CoeffTension1
+        X = 2 VBatterie : PinBattProc : CoeffTension2
+        // X = 3 NC, VUSB : PinBattUSB : CoeffTension3
+        // X = 4 NC, Tension24 : Pin24V : CoeffTension4
         effectue mesure tension avec CoeffTensionDefaut retourne et stock resultat
         recoit message "CALIBRATION=1250" mesure réelle en V*100
         calcul nouveau coeff = mesure reelle/resultat stocké * CoeffTensionDefaut
@@ -1488,7 +1537,7 @@ fin_tel:
     if (Sbidon.substring(0, 1) == "." && Sbidon.length() > 1) { // debut mode cal
       if (Sbidon.substring(1, 2) == "1" ) {
         M = 1;
-        P = PinAlim;
+        P = PinVexterne;
         coef = CoeffTension[0];
       }
       if (Sbidon.substring(1, 2) == "2" ) {
@@ -1529,10 +1578,6 @@ fin_tel:
       CoeffTension[M - 1] = coef;
       FlagCalibration = false;
       Recordcalib();														// sauvegarde en SPIFFS
-
-      // if (M == 4) {
-      // Extinction(); // eteindre
-      // }
     }
     else {
       message += F("message non reconnu");
@@ -1597,7 +1642,7 @@ fin_tel:
         config.hete = i;
         config.hhiver = j;
         sauvConfig();
-        MajHeure(false);
+        MajHeure("");
       }
     }
     message += F("TIMESAVING UTC e:h= ");
@@ -1640,8 +1685,39 @@ fin_tel:
     #endif
     sendReply(Origine);
   }
+  else if (Rmessage.indexOf(F("BLETIMEOUT")) == 0) {
+    // BLE au démarrage 1 à 254 minutes
+    if ((Rmessage.indexOf(char(61))) == 10) {
+      int i = atoi(Rmessage.substring(11).c_str());
+      if (i < 255 && i > 0) {
+        config.timeoutBLE = i;
+        sauvConfig();
+      }
+    }
+    message += F("BLE timeout (mn) : ");
+    message += String(config.timeoutBLE) + fl;
+    message += "Au prochain demarrage" + fl;
+    sendReply(Origine);
+  }else if (Rmessage.indexOf("AUTORISATIONSMS") == 0) {
+    // Autorisation envoie SMS
+    if (Rmessage.indexOf(char(61)) == 15) {
+      int i = Rmessage.substring(16).toInt();
+      if (i == 0){
+        config.sendSMS = 0;
+      } else if (i == 1){
+        config.sendSMS = 1;
+      }
+      sauvConfig();													// sauvegarde config
+      Sbidon = F("Autorisation SMS=");
+      Sbidon += String(config.sendSMS);
+    }
+    message += "Autorisation SMS : ";
+    message += String(config.sendSMS);
+    sendReply(Origine);
+  }
+  //**************************************
   else {
-    message += F("message non reconnu");
+    message += F("Commande non reconnue ?");		//"Commande non reconnue ?"
     sendReply(Origine);
   }
 }
@@ -1684,20 +1760,14 @@ bool decodeGPS() {
   int vsat, usat;
   bool fix = false;
   fix = modem.getGPS(&lat, &lon, &speed, &alt, &course, &vsat, &usat);
-  // Serial.print("fix=");
-  // Serial.println(fix);
-  // Serial.print("lat=");
-  // Serial.println(lat,6);
-  // Serial.print("lon=");
-  // Serial.println(lon,6);
-  // Serial.print("alt=");
-  // Serial.println(alt);
-  // Serial.print("speed=");
-  // Serial.println(speed);    
-  // Serial.print("course=");
-  // Serial.println(course);
+  // Serial.print("fix="),Serial.println(fix);
+  // Serial.print("lat="),Serial.println(lat,6);
+  // Serial.print("lon="),Serial.println(lon,6);
+  // Serial.print("alt="),Serial.println(alt);
+  // Serial.print("speed="),Serial.println(speed);    
+  // Serial.print("course="),Serial.println(course);
 
-  if (speed < config.vtransition){ // evité course fantaisiste à l'arret, recopie course precedent
+  if (speed < config.vtransition){ // eviter course fantaisiste à l'arret, recopie course precedent
     course = lastcourse;
   }
   lastcourse = course;
@@ -1716,7 +1786,7 @@ void mqttSubscriptionCallback( char* topic, byte* payload, unsigned int mesLengt
       mesLength - Message length.
   */
   // variable stockage temporaire
-  static char temptopic[12];
+  static char temptopic[13];
   static String tempmessage = "";
 
   Serial.print("Message arrived on topic: ");
@@ -1733,8 +1803,7 @@ void mqttSubscriptionCallback( char* topic, byte* payload, unsigned int mesLengt
   }
   Serial.println();
 
-  /* si len>0, flagRcvMQTT = true, le traitement des commandes bloquantes
-    NONCIRCULE, "Wifi,SSID,PW"
+  /* si len>0, flagRcvMQTT = true, le traitement des commandes 
     ne seront pas executées,
     ne le seront qu'au retour de flagRcvMQTT = false
     garantie que le message à bien été effacé du serveur
@@ -1746,7 +1815,6 @@ void mqttSubscriptionCallback( char* topic, byte* payload, unsigned int mesLengt
     flagRcvMQTT = true;
     // sauvegarde topic et message
     tempmessage = Sbidon;
-    // temptopic   = String(topic);
     strcpy(temptopic,topic);
     Rmessage    = Sbidon;
     // on efface le topic sur le serveur
@@ -1791,30 +1859,29 @@ void mqttSubscriptionCallback( char* topic, byte* payload, unsigned int mesLengt
 bool mqttConnect() {
   // 7) Use the MQTTConnect function to set up and maintain a connection to the MQTT.
 
-  // if (modem.isGprsConnected()) {
-    // Loop until connected.
-    while ( !mqttClient.connected()) {
-      // Connect to the MQTT broker.
-      Serial.print("Attempting MQTT connection...");
-      if ( mqttClient.connect(config.Idchar, config.mqttUserName, config.mqttPass,config.sendTopic[0],1,true,config.Idchar,true)) {
-        Serial.println( "Connected with Client ID:  " + String(config.Idchar) + " User " + String(config.mqttUserName) + " Pwd " + String(config.mqttPass));
-        return true;
-      } else {
-        Serial.print( "failed, rc = " );
-        // See https://pubsubclient.knolleary.net/api.html#state for the failure code explanation.
-        Serial.print( mqttClient.state() );
-        Serial.println( " Will try again in 5 seconds" );
-        // Alarm.delay(5000);
-        // break;
-        return false;
-      }
+  // Loop until connected.
+  while (!mqttClient.connected()) {
+    // Connect to the MQTT broker.
+    Serial.print("Attempting MQTT connection...");
+    if ( mqttClient.connect(config.Idchar, config.mqttUserName, config.mqttPass,config.sendTopic[0],1,true,config.Idchar,true)) {
+      Serial.println( "Connected with Client ID:  " + String(config.Idchar) + " User " + String(config.mqttUserName) + " Pwd " + String(config.mqttPass));
+      return true;
+    } else {
+      Serial.print( "failed, rc = " );
+      // See https://pubsubclient.knolleary.net/api.html#state for the failure code explanation.
+      Serial.print( mqttClient.state() );
+      Serial.println( " Will try again in 5 seconds" );
+      // Alarm.delay(5000);
+      // break;
+      return false;
     }
-  // }
+  }
+  return false;
 }//---------------------------------------------------------------------------
 // Subscription MQTT, qos=1
+// unsubSub = 0 subscribe, = 1 unsubscribe
 bool mqttSubscribe(bool unsubSub) {
   byte rep = 1;
-  // unsubSub = 0 subscribe, = 1 unsubscribe
   if (unsubSub == 0) {
     for(byte i = 0; i<2;i++){
       if (mqttClient.subscribe( config.recvTopic[i] , 1 )){ // Subscribe
@@ -1836,11 +1903,11 @@ bool mqttSubscribe(bool unsubSub) {
     }
     return rep;
   }
+  return false;
 }
 //---------------------------------------------------------------------------
 void generationMessage() {
   /* Generation du message etat/alarme général */
-
   messageId();
   if (FlagAlarmeTension || FlagAlarmeGprs || FlagAlarmeMQTT || FlagAlarmeGps) {
     message += F("--KO--------KO--");
@@ -1860,39 +1927,41 @@ void generationMessage() {
   } else {
     message += "Online KO" + fl;
   }
-  // if (!FlagAlarmeGprs) {
-  //   message += "GPRS OK" + fl;
-  // } else {
-  //   message += "GPRS KO" + fl;
-  // }
+  if(config.sendSMS){
+    message += F("Gprs ");
+    if (FlagAlarmeGprs) {
+      message += F("KO");
+    } else {
+      message += F("OK");
+    }
+    message += fl;
 
-  // if (!FlagAlarmeMQTT) {
-  //   message += "MQTT OK" + fl;
-  // } else {
-  //   message += "MQTT KO" + fl;
-  // }
+    message += F("Mqtt ");
+    if (FlagAlarmeMQTT) {
+      message += F("KO");
+    } else {
+      message += F("OK");
+    }
+    message += fl;
+  }
   
   if (!FlagAlarmeGps) {
     message += "GPS OK" + fl;
   } else {
     message += "GPS KO" + fl;
   }
-
-  message += F("Alimentation : ");				//"Alarme Batterie : "
-  if (FlagAlarmeTension) {
-    message += F("Alarme, ");
-    // message += fl;// V2-15
+  if(!VinPresent){
+    message += F("Batterie : ");				//"Alarme Batterie : "
+    if (FlagAlarmeTension) {
+      message += F("Alarme, ");
+    }
+    else {
+      message += F("OK, ");
+    }
+    message += String(VBatterieProc/1000.0,2) + "V, ";
+    message += String(BattLipopct(VBatterieProc)) + "%";
+    message += fl;
   }
-  else {
-    message += F("OK, ");
-    // message += fl;// V2-15
-  }
-  // message += String(VAlim/1000.0, 2) + "V";
-  message += String(modem.getBattVoltage());
-  // message += fl;
-  // message += "Valim proc = ";
-  // message += String(VBatterieProc/1000.0, 2) + "V";
-  // message += fl;
 }
 //---------------------------------------------------------------------------
 void init_adc_mm(void) {
@@ -1903,28 +1972,28 @@ void init_adc_mm(void) {
   	val defaut = valdefaut*nSample */
   unsigned int ini_adc1 = 0;// val defaut adc 1
   unsigned int ini_adc2 = 0;// val defaut adc 2
-  unsigned int ini_adc3 = 0;// val defaut adc 3
-  unsigned int ini_adc4 = 0;// val defaut adc 4
-  unsigned int ini_adc5 = 0;// val defaut adc 5
+  // unsigned int ini_adc3 = 0;// val defaut adc 3
+  // unsigned int ini_adc4 = 0;// val defaut adc 4
+  // unsigned int ini_adc5 = 0;// val defaut adc 5
   for (int plus_ancien = 0; plus_ancien < nSample; plus_ancien++) {
     adc_hist[0][plus_ancien] = ini_adc1;
     adc_hist[1][plus_ancien] = ini_adc2;
-    adc_hist[2][plus_ancien] = ini_adc3;
-    adc_hist[3][plus_ancien] = ini_adc4;
-    adc_hist[4][plus_ancien] = ini_adc5;
+    // adc_hist[2][plus_ancien] = ini_adc3;
+    // adc_hist[3][plus_ancien] = ini_adc4;
+    // adc_hist[4][plus_ancien] = ini_adc5;
   }
   //on commencera à stocker à cet offset
   adc_mm[0] = ini_adc1;
   adc_mm[1] = ini_adc2;
-  adc_mm[2] = ini_adc3;
-  adc_mm[3] = ini_adc4;
-  adc_mm[4] = ini_adc5;
+  // adc_mm[2] = ini_adc3;
+  // adc_mm[3] = ini_adc4;
+  // adc_mm[4] = ini_adc5;
 }
 //---------------------------------------------------------------------------
 void adc_read() {
-  read_adc(PinAlim, PinBattProc); // lecture des adc
+  read_adc(PinVexterne, PinBattProc); // lecture des adc
   
-  VAlim         = map(adc_mm[0] / nSample, 0, 4095, 0, CoeffTension[0]);
+  VExterne      = map(adc_mm[0] / nSample, 0, 4095, 0, CoeffTension[0]);
   VBatterieProc = map(adc_mm[1] / nSample, 0, 4095, 0, CoeffTension[1]);
 }
 //---------------------------------------------------------------------------
@@ -1932,8 +2001,8 @@ void read_adc(int pin1, int pin2) {
   // http://www.f4grx.net/algo-comment-calculer-une-moyenne-glissante-sur-un-microcontroleur-a-faibles-ressources/
   static int plus_ancien = 0;
   //acquisition
-  int sample[5];
-  for (byte i = 0; i < 5; i++) {
+  int sample[2];
+  for (byte i = 0; i < 2; i++) {
     if (i == 0)sample[i] = moyenneAnalogique(pin1);
     if (i == 1)sample[i] = moyenneAnalogique(pin2);
     // if (i == 2)sample[i] = moyenneAnalogique(pin3);
@@ -1978,8 +2047,7 @@ void EffaceSMS(int s) {
 }
 //---------------------------------------------------------------------------
 void ConnexionWifi(char* ssid, char* pwd, String Origine) {
-  mqttClient.disconnect();
-  modem.gprsDisconnect();
+  
   Alarm.disable(Send);
   Alarm.disable(loopPrincipale);
   setCpuFrequencyMhz(240);
@@ -2042,12 +2110,6 @@ void ConnexionWifi(char* ssid, char* pwd, String Origine) {
   }
   sendReply(Origine);
 
-  // A Finir
-  // if (sms) { // suppression du SMS
-  //   /* Obligatoire ici si non bouclage au redemarrage apres timeoutwifi
-  //     ou OTA sms demande Wifi toujours present */
-  //   EffaceSMS(index);
-  // }
   debut = millis();
   if (!error) {
     /* boucle permettant de faire une mise à jour OTA et serveur, avec un timeout en cas de blocage */
@@ -2056,7 +2118,7 @@ void ConnexionWifi(char* ssid, char* pwd, String Origine) {
       // if(WiFi.status() != WL_CONNECTED) break; // wifi a été coupé on sort
       ArduinoOTA.handle();
       server_wifi.handleClient(); // Listen for client connections
-      Alarm.delay(1);
+      delay(1);
     }
     WifiOff();
   }
@@ -2253,6 +2315,7 @@ void ConnexionServeur(String number, bool sms, int index) {
   // FlagReset = true;
 }
 //---------------------------------------------------------------------------
+// Arret du Wifi
 void WifiOff() {
   Serial.println(F("Wifi off"));
   WiFi.disconnect(true);
@@ -2272,7 +2335,8 @@ void ResetHard() {
   digitalWrite(PinReset, LOW);
 }
 //---------------------------------------------------------------------------
-void OuvrirPB() { // Vérification fichier PhoneBook existe
+// Vérification fichier PhoneBook existe
+void OuvrirPB() {
   // par ligne : N°tel;Nom\n
   if (!SPIFFS.exists(filePhoneBook)) {
     // fichier n'existe pas
@@ -2283,7 +2347,8 @@ void OuvrirPB() { // Vérification fichier PhoneBook existe
   }
 }
 //---------------------------------------------------------------------------
-void OuvrirFichierCalibration() { // Lecture fichier calibration
+// Lecture fichier calibration
+void OuvrirFichierCalibration() {
 
   if (SPIFFS.exists(filecalibration)) {
     File f = SPIFFS.open(filecalibration, "r");
@@ -2302,17 +2367,14 @@ void OuvrirFichierCalibration() { // Lecture fichier calibration
     Recordcalib();
   }
   Serial.print(F("Coeff T Batterie = ")), Serial.print(CoeffTension[0]);
-  Serial.print(F(" Coeff T Proc = "))	  , Serial.print(CoeffTension[1]);
+  Serial.print(F(" Coeff T Proc = "))	  , Serial.println(CoeffTension[1]);
   // Serial.print(F(" Coeff T VUSB = "))		, Serial.print(CoeffTension[2]);
   // Serial.print(F(" Coeff T 24V = "))		, Serial.println(CoeffTension[3]);
 
 }
 //---------------------------------------------------------------------------
-void RecordPB(String newline) { // enregistrer fichier Phone Book en SPIFFS
-  
-}
-//---------------------------------------------------------------------------
-void Recordcalib() { // enregistrer fichier calibration en SPIFFS
+// enregistrer fichier calibration en SPIFFS
+void Recordcalib() {
   // Serial.print(F("Coeff T Batterie = ")),Serial.println(CoeffTension1);
   // Serial.print(F("Coeff T Proc = "))	  ,Serial.println(CoeffTension2);
   // Serial.print(F("Coeff T VUSB = "))		,Serial.println(CoeffTension3);
@@ -2326,7 +2388,7 @@ void Recordcalib() { // enregistrer fichier calibration en SPIFFS
 //--------------------------------------------------------------------------------//
 void messageId() {
   message = Id;
-  message += displayTime();
+  message += displayTime(0);
   message += fl;
 }
 //---------------------------------------------------------------------------
@@ -2389,10 +2451,10 @@ void HomePage() {
   webpage += F("<td>");	webpage += String(config.mqttPass);	webpage += F("</td>");
   webpage += F("</tr>");
 
-  // webpage += F("<tr>");
-  // webpage += F("<td>MQTT Topic</td>");
-  // webpage += F("<td>");	webpage += String(config.writeTopic);	webpage += F("</td>");
-  // webpage += F("</tr>");
+  webpage += F("<tr>");
+  webpage += F("<td>Autorisation Send SMS</td>");
+  webpage += F("<td>");	webpage += String(config.sendSMS);	webpage += F("</td>");
+  webpage += F("</tr>");
 
   webpage += F("<tr>");
   webpage += F("<td>TimeOut Wifi (s)</td>");
@@ -2705,11 +2767,13 @@ void PrintConfig() {
   Serial.print(F("Tempo rapide = "))            , Serial.println(config.trapide);
   Serial.print(F("Tempo lente = "))             , Serial.println(config.tlent);
   Serial.print(F("Vitesse mini = "))            , Serial.println(config.vtransition);
+  Serial.print(F("Send SMS autorisation = "))   , Serial.println(config.sendSMS);
   Serial.print(F("Time Out Wifi (s)= "))        , Serial.println(config.timeoutWifi);
+  Serial.print(F("Time Out BLE (mn)= "))        , Serial.println(config.timeoutBLE);
 }
 //---------------------------------------------------------------------------
+// Calcul distance entre 2 point GPS Lat1, Long1, Lat2, Long2
 float calc_dist(float Lat1, float Long1, float Lat2, float Long2) {
-  // Calcul distance entre 2 point GPS Lat1, Long1, Lat2, Long2
   //  Serial.print(Lat1, 7), Serial.print(F("|")), Serial.println(Long1, 7);
   //  Serial.print(Lat2, 7), Serial.print(F("|")), Serial.println(Long2, 7);
   float dist_calc = 0;
@@ -2750,6 +2814,9 @@ void sendReply(String Origine) {
     if (config.sendSMS){
       // A finir
     }
+  }  else if (Origine == "BLE"){
+    pCharacteristic->setValue(message.c_str());
+    pCharacteristic->notify();
   }
 
   opmessage = message;
@@ -2787,51 +2854,29 @@ void Envoyer_MQTT(bool dest){
   } else {Serial.println("Off Line");}
 }
 //---------------------------------------------------------------------------
-// force = true, force mise à l'heure systeme sur heure modem, meme si defaut NTP
-void MajHeure(bool force) {
-  static bool First = true;
-  SyncHeureModem(config.hete*4, true);
-  if (First) {															  // premiere fois apres le lancement
-    readmodemtime();	// lire l'heure du modem
-    setTime(N_H,N_m, N_S, N_D, N_M, N_Y);	    // mise à l'heure de l'Arduino
-    if(!HeureEte()){
-      // Serial.print("NTP:"),Serial.println(modem.NTPServerSync(NTPServer, config.hhiver*4));
-      SyncHeureModem(config.hhiver*4, true);
-      readmodemtime();	// lire l'heure du modem
-      setTime(N_H,N_m, N_S, N_D, N_M, N_Y);	    // mise à l'heure de l'Arduino
-    }
-    First = false;
-  } else {
-    //  calcul décalage entre H sys et H reseau en s
-    // resynchroniser H modem avec reseau
+// newtime = "" mise à l'heure NTP
+// newtime = "YY/MM/DD,hh:mm:ss" mise à l'heure reçue
+bool MajHeure(String newtime){
+  if(newtime.length() == 0){ // mise à l'heure NTP
     if(HeureEte()){
-      // Serial.print("NTP:"),Serial.println(modem.NTPServerSync(NTPServer, config.hete*4));
-      if(!SyncHeureModem(config.hete*4, false)){
-        if(!force)return; // sortie sans mise à l'heure, continue si forcé
-      }
+      SyncHeureModem(config.hete*4, true);
     } else {
-      // Serial.print("NTP:"),Serial.println(modem.NTPServerSync(NTPServer, config.hhiver*4));
-      if(!SyncHeureModem(config.hhiver*4, false)){
-        if(!force)return; // sortie sans mise à l'heure, continue si forcé
-      }
+      SyncHeureModem(config.hhiver*4, true);
     }
-    readmodemtime();	// lire l'heure du modem
-    int ecart = (N_H - hour()) * 3600;
-    ecart += (N_m - minute()) * 60;
-    ecart += N_S - second();
-    Serial.print(F("Ecart s= ")), Serial.println(ecart);
-
-    if (abs(ecart) > 5) {
-      // Arret Alarm en cours
-      Alarm.disable(loopPrincipale);
-      Alarm.disable(Send);
-      setTime(N_H,N_m, N_S, N_D, N_M, N_Y);	    // mise à l'heure de l'Arduino
-      readmodemtime();	// lire l'heure du modem
-      setTime(N_H,N_m, N_S, N_D, N_M, N_Y);	    // mise à l'heure de l'Arduino
-      // Redemarrage Alarm en cours
-      Alarm.write(loopPrincipale, 15);
-      if(config.tracker) Alarm.write(Send, config.tlent);
-    }
+    StartStopAlarme(false);
+    set_system_time(); // Set systeme time to modem time
+    StartStopAlarme(true);
+    return true;
+  } else if(newtime.length() == 17){ // mise à l'heure reçue, long OK
+    newtime.replace(","," ");
+    Sbidon = "AT+CCLK=\"" + newtime + "\"";
+    modem.send_AT(Sbidon);
+    StartStopAlarme(false);
+    set_system_time();  // Set systeme time to modem time
+    StartStopAlarme(true);
+    return true;
+  } else { // format non reconnu
+    return false;
   }
 }
 //---------------------------------------------------------------------------
@@ -2890,12 +2935,6 @@ bool HeureEte() {
     Hete = true;                       								// c'est l'été
   }
   return Hete;
-}
-//---------------------------------------------------------------------------
-String displayTime() {
-  char bidon[20];
-  sprintf(bidon, "%02d/%02d/%04d %02d:%02d:%02d", day(), month(), year(), hour(), minute(), second());
-  return String(bidon);
 }
 //---------------------------------------------------------------------------
 // lire valeur RSSI et remplir message
@@ -2959,7 +2998,7 @@ String displayTime(byte n) {
   // n = 1 ; yyyy-mm-dd hh:mm:ss
   char bid[20];
   if (n == 0) {
-    sprintf(bid, "%02d/%02d/%4d %02d:%02d:%02d", day(), month(), year(), hour(), minute(), second());
+    sprintf(bid, "%02d/%02d/%04d %02d:%02d:%02d", day(), month(), year(), hour(), minute(), second());
   }
   else {
     sprintf(bid, "%4d-%02d-%02d %02d:%02d:%02d", year(), month(), day(), hour(), minute(), second());
@@ -3079,13 +3118,6 @@ bool SyncHeureModem(int Savetime, bool FirstTime){
   return false;
 }
 //---------------------------------------------------------------------------
-// void SignalVie() {
-//   Serial.print(F("SignalVie "));
-//   displayTime();
-//   envoieGroupeMessage(true);		// envoie groupé
-//   NbrResetModem = 0;          // reset compteur reset modem
-// }
-//---------------------------------------------------------------------------
 // retourne n° derniere ligne PB
 byte last_PB(){
   Read_PB();
@@ -3190,7 +3222,7 @@ void logmessage(){
     }
     // ecrire sur carte SD
     File file = SD.open(SDfilename,FILE_APPEND);
-    file.print(displayTime());
+    file.print(displayTime(0));
     file.print(";");
     file.println(opmessage);
     file.close();
@@ -3200,33 +3232,44 @@ void logmessage(){
 //---------------------------------------------------------------------------
 // Copie valeur topic en config
 void copie_Topic(){
-  strncpy(config.sendTopic[0],("L/in"),sizeof(config.sendTopic[0]));   // localisation vers Serveur
-  strncpy(config.sendTopic[1],("L/Uin/"),sizeof(config.sendTopic[1])); // vers User
-  strcat( config.sendTopic[1], &config.Idchar[5]); // L/Uin/TTX0x ou L/Uin/VR00x
+  strncpy(config.sendTopic[0],("L/in"),sizeof(config.sendTopic[0]));    // localisation vers Serveur
+  strncpy(config.sendTopic[1],("L/Uin/"),sizeof(config.sendTopic[1]));  // vers User
+  strcat( config.sendTopic[1], &config.Idchar[5]);                      // L/Uin/TTX0x ou L/Uin/VR00x
 
   strncpy(config.recvTopic[0],("L/Sout/"),sizeof(config.recvTopic[0])); // from Serveur
-  strcat( config.recvTopic[0], &config.Idchar[5]); // L/Sout/TTX0x ou VR00x
+  strcat( config.recvTopic[0], &config.Idchar[5]);                      // L/Sout/TTX0x ou VR00x
   
   strncpy(config.recvTopic[1],("L/Uout/"),sizeof(config.recvTopic[1])); // from User
-  strcat( config.recvTopic[1], &config.Idchar[5]); // L/Sout/TTX0x ou VR00x
+  strcat( config.recvTopic[1], &config.Idchar[5]);                      // L/Sout/TTX0x ou VR00x
 }
 //---------------------------------------------------------------------------
-// Change Blinker
-void Change(bool on){
-  Blinker.detach();
-  if(!on){
-    BlinkerInterval = 1000;
-    Blinker.attach_ms(BlinkerInterval, Blink);
-  } else {
-    BlinkerInterval = 200;
-    Blinker.attach_ms(BlinkerInterval, Blink);
+// Capture reception depuis BLE
+void receiveBLE(){
+  // disconnecting
+  if (!deviceConnected && oldDeviceConnected) {
+    delay(500); // give the bluetooth stack the chance to get things ready
+    pServer->startAdvertising(); // restart advertising
+    Serial.println("restart advertising");
+    oldDeviceConnected = deviceConnected;
   }
-  Serial.print("change Blinker:"),Serial.println(BlinkerInterval);
-}
-//---------------------------------------------------------------------------
-// Blinker
-void Blink(){
-  digitalWrite(LED_EXTERNE_PIN, !digitalRead(LED_EXTERNE_PIN));
+  // connecting
+  if (deviceConnected && !oldDeviceConnected) {
+      // do stuff here on connecting
+      Serial.println("Client connected");
+      oldDeviceConnected = deviceConnected;
+  }
+  if(flagRecu){
+    // Serial.print("Bien recu: ");
+    // Serial.println(Rmessage.length());
+    // char txt[messageRecu.length() + 1 + 2 + 11];// +2 char fin de message recu, 11 pour Bien recu:\n
+    char txt[124];
+    // sprintf(txt,"recu:%s\n",Rmessage);
+    // Serial.print(txt);
+    pCharacteristic->setValue(txt);
+    pCharacteristic->notify();
+    flagRecu = false;
+    traite_sms("BLE");
+  }
 }
 /* --------------------  test local serial seulement ----------------------*/
 void recvOneChar() {
