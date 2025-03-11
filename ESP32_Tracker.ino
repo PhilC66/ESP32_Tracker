@@ -10,7 +10,6 @@
   modem.setNetworkMode(38);  38 LTE only (+CNMP)
 
   modem.getNetworkCurrentMode (+CNSMOD)PhC
-  modem.getNetworkSystemMode (+CNSMOD)
   modem.setNetworkSystemMode (+CNSMOD=0/1 auto report)
 
   si GPS utilisé sur carte LILYGO
@@ -30,14 +29,14 @@
 /*
 Compilation ESP32 2.0.17
 avec Flash 4Mo : choisir compilation Minimal SPIFFS (Large APPS with OTA)
-Arduino IDE VSCODE : 1771777 90%, 64504 19% sur PC
+Arduino IDE VSCODE : 1718365 87%, 63208 19% sur PC Vscode
 Arduino IDE 1.8.19 :  sur raspi
 */
 
 
 #include <Arduino.h>
 
-String ver     = "V1-00";
+String ver     = "V1-10";
 int Magique    = 3;
 
 #define LILYGO_SIM7000G // not define for SIM7000G board only
@@ -97,7 +96,7 @@ bool    SPIFFS_present = false;
 #define LED_PIN             12
 #define LED_EXTERNE_PIN     22   // Led indicateur vers l'exterieur, ON: au lancement, Cli lent: init modem, flash: connecté
 #define PinBattProc         35   // liaison interne carte Lolin32 adc
-#define PinVexterne         36   // mesure tension alimentation SOLAR IN ou Chargeur Externe
+#define PinVexterne         36   // mesure tension alimentation SOLAR IN ou Chargeur Externe redefini plus loin pour tracker autre que TTX ou VR
 #define PinReset            18   // 13   // Reset Hard ESP32
 #define PinVin              39   // mesure tension Vin présente si USB conneté
 #define NTPServer "pool.ntp.org"
@@ -139,6 +138,7 @@ bool FlagAlarmeMQTT        = false;
 bool FlagAlarmeGps         = false;
 bool AlarmeMQTT            = false;
 bool VinPresent            = false;      // Si Vin present inhibe mesure VBatterie
+bool FlagTrackerLoc        = false;      // false pour Id TTX et VR, true pour les autres Id
 
 bool FlagLastAlarmeTension = false;
 bool FlagLastAlarmeGprs    = false;
@@ -312,7 +312,7 @@ void setup() {
   modem.setPreferredMode(1); // Mode CAT-M
   // Allumage du GPS
   modem.send_AT("+CGPIO=0,48,1,1"); // Alimentation antenne GPS
-  opmessage += "turn ON GPS";
+  opmessage += "turn ON GPS= ";
   opmessage += modem.enableGPS();
   opmessage += fl;
 
@@ -451,6 +451,10 @@ void setup() {
   Send = Alarm.timerRepeat(config.trapide, senddata); // send data
   Alarm.disable(Send);
 
+  if(!(Id.indexOf("TTX") > -1 || Id.indexOf("VR") > -1)){ // Id n'est pas TTX ou VR, Engin type 63xxx
+    #define PinVexterne  39
+    FlagTrackerLoc = true;
+  }
 //---------------------------------------------------------------------------
   // Create the BLE Device
   String BLEid = "ESP32:" + String(config.Idchar);
@@ -517,11 +521,16 @@ void loop() {
     mqttClient.loop(); // Call the loop to maintain connection to the server.
   }
 
-  if(analogRead(PinVin) > 2000){ // Si Vin present USB connecter, inhiber mesure Batterie
+  if(!FlagTrackerLoc){ // Id TTX ou VR
+    if(analogRead(PinVin) > 2000){ // Si Vin present USB connecter, inhiber mesure Batterie
+      VinPresent = true;
+    } else {
+      VinPresent = false;
+    }
+  } else {             // Tracker Id Loc
     VinPresent = true;
-  } else {
-    VinPresent = false;
   }
+
   ArduinoOTA.handle();
   Alarm.delay(0);
 }
@@ -589,6 +598,25 @@ void Acquisition() {
       if (nalaAlim > 0)nalaAlim --;
     }
   }
+  if(FlagTrackerLoc){ // Tracker Id loc
+    if(VExterne < 4500){
+      if (nalaAlim ++ == 10) {
+        FlagAlarmeTension = true;
+        nalaAlim = 0;
+      }
+    }
+    else if (VExterne >= 5000){
+      nRetourTension ++;
+      if (nRetourTension == 4) {
+        FlagAlarmeTension = false;
+        nRetourTension = 0;
+      }
+    }
+    else {
+      if (nalaAlim > 0)nalaAlim --;
+    }
+  }
+
   static byte nalaGps = 0;
   if (config.tracker){
     if (!decodeGPS()) {
@@ -687,9 +715,9 @@ void Check_Online(){
   // Patch Blocage modem
   if(! net_status){
     if(cptRegStatusFault ++ > 24){ // si hors réseau > 24*5s
+      opmessage = "Reset modem suite Reg status fault " + String(cptRegStatusFault);
       cptRegStatusFault = 0;
       NbrResetModem +=1;
-      opmessage = "Reset modem suite Reg status fault" + String(cptRegStatusFault);
       logmessage();
       if(modem.setPhoneFunctionality(1,1)){// CFUN=1,1 full functionality, reset online mode
         modem.setNetworkMode(38);  // Network Mode LTE
@@ -984,6 +1012,10 @@ fin_tel:
       message += F("V Batterie = ");
       message += String(VBatterieProc/1000.0,2) + "V, ";
       message += String(BattLipopct(VBatterieProc)) + "%";
+    }
+    if(FlagTrackerLoc){ // Tracker Id Loc
+      message += F("V Alim (>=5V) = ");
+      message += String(VExterne/1000.0,2) + "V";
     }
 
     sendReply(Origine);
@@ -1909,7 +1941,7 @@ bool mqttSubscribe(bool unsubSub) {
 void generationMessage() {
   /* Generation du message etat/alarme général */
   messageId();
-  if (FlagAlarmeTension || FlagAlarmeGprs || FlagAlarmeMQTT || FlagAlarmeGps) {
+  if (FlagAlarmeTension || FlagAlarmeGprs || FlagAlarmeMQTT || FlagAlarmeGps || !Online) {
     message += F("--KO--------KO--");
   }
   else {
@@ -1960,6 +1992,17 @@ void generationMessage() {
     }
     message += String(VBatterieProc/1000.0,2) + "V, ";
     message += String(BattLipopct(VBatterieProc)) + "%";
+    message += fl;
+  }
+  if(FlagTrackerLoc){ // Tracker Id Loc
+    message += F("Alim (>=5V) : ");				//"Alarme Alimentation : "
+    if (FlagAlarmeTension) {
+      message += F("Alarme, ");
+    }
+    else {
+      message += F("OK, ");
+    }
+    message += String(VExterne/1000.0,2) + "V";
     message += fl;
   }
 }
