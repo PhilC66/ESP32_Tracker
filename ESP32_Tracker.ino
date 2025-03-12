@@ -5,6 +5,7 @@
 
   ********************************************
   Au premier lancement nouvelle carte SIM7000G
+  Lancer ESP32_SIM7000_demo.ino
   il faut mini les 2 premiers + GPS:
   modem.setPreferredMode(1); 1 CAT-M (+CMNB)
   modem.setNetworkMode(38);  38 LTE only (+CNMP)
@@ -27,9 +28,10 @@
   */
 
 /*
-Compilation ESP32 2.0.17
+Installé VR001,VR002,TTX01,63138,63165,63240
+Compilation ESP32 2.0.17 V1-10
 avec Flash 4Mo : choisir compilation Minimal SPIFFS (Large APPS with OTA)
-Arduino IDE VSCODE : 1718365 87%, 63208 19% sur PC Vscode
+Arduino IDE VSCODE : 1718233 87%, 63208 19% sur PC Vscode
 Arduino IDE 1.8.19 :  sur raspi
 */
 
@@ -341,7 +343,7 @@ void setup() {
     config.logSDcard        = false;
     config.keepAlive        = 300; // 5mn, IMPERATIF pour réduire conso data
     config.timeoutBLE       = 5;   // Timeout BLE au démarrage en minutes
-    String temp             = "TPCF_TTX01";
+    String temp             = "TPCF_63240";
     temp.toCharArray(config.Idchar, 11);
     String tempapn          = "eapn1.net";//"sl2sfr";//"free"
     String tempUser         = "";
@@ -457,8 +459,7 @@ void setup() {
   }
 //---------------------------------------------------------------------------
   // Create the BLE Device
-  String BLEid = "ESP32:" + String(config.Idchar);
-  BLEDevice::init("Tracker");
+  BLEDevice::init(config.Idchar);
     
   // Create the BLE Server
   pServer = BLEDevice::createServer();
@@ -576,7 +577,9 @@ void Acquisition() {
 
   Serial.print("tension proc = "), Serial.print(VBatterieProc / 1000.0, 2), Serial.print("V ");
   Serial.print(BattLipopct(VBatterieProc)), Serial.print("%");
-  Serial.print("; tension alim externe = "), Serial.print(VExterne / 1000.0, 2), Serial.println("V");
+  if(FlagTrackerLoc){
+    Serial.print("; tension alim externe = "), Serial.print(VExterne / 1000.0, 2), Serial.println("V");
+  } else {Serial.println("");}
   
   static byte nalaAlim = 0;
   static byte nRetourTension = 0;
