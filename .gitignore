@@ -1,7 +1,6 @@
 session
 passdata.h
 credentials_mqtt.h
-versions stable.txt
 utilities.h
 
 .pio

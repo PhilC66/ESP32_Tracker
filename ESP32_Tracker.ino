@@ -28,6 +28,15 @@
   */
 
 /*
+V1-20 17/05/2025
+remplacement mesure batterie et %batterie par info venant du SIM7000
+ajouté info batterie dans les données envoyées
+Installé VR002, VR003, VR004
+Compilation ESP32 2.0.17 V1-20
+avec Flash 4Mo : choisir compilation Minimal SPIFFS (Large APPS with OTA)
+Arduino IDE VSCODE : 1772121 90%, 64504 19% sur PC Vscode
+Arduino IDE 1.8.19 :  sur raspi
+
 Installé VR001,VR002,TTX01,63138,63165,63240
 Compilation ESP32 2.0.17 V1-10
 avec Flash 4Mo : choisir compilation Minimal SPIFFS (Large APPS with OTA)
@@ -38,7 +47,7 @@ Arduino IDE 1.8.19 :  sur raspi
 
 #include <Arduino.h>
 
-String ver     = "V1-10";
+String ver     = "V1-20";
 int Magique    = 3;
 
 #define LILYGO_SIM7000G // not define for SIM7000G board only
@@ -140,7 +149,7 @@ bool FlagAlarmeMQTT        = false;
 bool FlagAlarmeGps         = false;
 bool AlarmeMQTT            = false;
 bool VinPresent            = false;      // Si Vin present inhibe mesure VBatterie
-bool FlagTrackerLoc        = false;      // false pour Id TTX et VR, true pour les autres Id
+bool FlagTrackerLoc        = false;      // false pour Id TTX et VR, true pour les autres Id locomotive
 
 bool FlagLastAlarmeTension = false;
 bool FlagLastAlarmeGprs    = false;
@@ -206,8 +215,8 @@ char willTopic[7];
 
 int N_Y, N_M, N_D, N_H, N_m, N_S; // variable Date/Time temporaire
 
-int NbrResetModem = 0;              // Nombre de fois reset modem, remise à 0 signal vie
-String dataToPublish;   // Holds your field data.
+int NbrResetModem = 0;      // Nombre de fois reset modem, remise à 0 signal vie
+String dataToPublish;       // Holds your field data.
 
 Ticker ADC;                // Lecture des Adc
 
@@ -333,7 +342,7 @@ void setup() {
     config.magic            = Magique;
     config.tracker          = true;
     config.trapide          = 10;      // secondes
-    config.tlent            = 15;      // secondes
+    config.tlent            = 300;     // secondes
     config.vtransition      = 2;       // kmh
     config.timeoutWifi      = 10 * 60;
     config.hete             = 2;
@@ -343,7 +352,7 @@ void setup() {
     config.logSDcard        = false;
     config.keepAlive        = 300; // 5mn, IMPERATIF pour réduire conso data
     config.timeoutBLE       = 5;   // Timeout BLE au démarrage en minutes
-    String temp             = "TPCF_63240";
+    String temp             = "TPCF_VR003";
     temp.toCharArray(config.Idchar, 11);
     String tempapn          = "eapn1.net";//"sl2sfr";//"free"
     String tempUser         = "";
@@ -539,6 +548,7 @@ void loop() {
 void Acquisition() {
   static float lastlon = 0;
   static float lastlat = 0;
+  int8_t BattPercent = 0;
 
   if (!FlagSetTime){ // si mise à l'heure non valide
     StartStopAlarme(false);
@@ -574,34 +584,35 @@ void Acquisition() {
     FlagReset = false;
     ResetHard();					//	redemarrage ESP
   }
-
+  VBatterieProc = modem.getBattVoltage();
+  BattPercent = modem.getBattPercent();
   Serial.print("tension proc = "), Serial.print(VBatterieProc / 1000.0, 2), Serial.print("V ");
-  Serial.print(BattLipopct(VBatterieProc)), Serial.print("%");
+  Serial.print(BattPercent), Serial.print("%");
   if(FlagTrackerLoc){
     Serial.print("; tension alim externe = "), Serial.print(VExterne / 1000.0, 2), Serial.println("V");
   } else {Serial.println("");}
   
   static byte nalaAlim = 0;
   static byte nRetourTension = 0;
-  if(!VinPresent){                          // pas de Vin autorise mesure VBatterie
-    if (BattLipopct(VBatterieProc) < 10) {
-      if (nalaAlim ++ == 10) {
-        FlagAlarmeTension = true;
-        nalaAlim = 0;
-      }
-    }
-    else if (BattLipopct(VBatterieProc) > 80) {
-      nRetourTension ++;
-      if (nRetourTension == 4) {
-        FlagAlarmeTension = false;
-        nRetourTension = 0;
-      }
-    }
-    else {
-      if (nalaAlim > 0)nalaAlim --;
+  
+  if (BattPercent <= 20) {
+    if (nalaAlim ++ == 10) {
+      FlagAlarmeTension = true;
+      nalaAlim = 0;
     }
   }
-  if(FlagTrackerLoc){ // Tracker Id loc
+  else if (BattPercent > 80) {
+    nRetourTension ++;
+    if (nRetourTension == 4) {
+      FlagAlarmeTension = false;
+      nRetourTension = 0;
+    }
+  }
+  else {
+    if (nalaAlim > 0)nalaAlim --;
+  }
+  
+  if(FlagTrackerLoc){ // Tracker Id locomotive
     if(VExterne < 4500){
       if (nalaAlim ++ == 10) {
         FlagAlarmeTension = true;
@@ -640,11 +651,7 @@ void Acquisition() {
         logmessage();
       }
     } else {
-      if (nalaGps > 0){
-        nalaGps --;
-      } else {
-        FlagAlarmeGps = false;
-      }
+      FlagAlarmeGps = false;
     }
     // Serial.print("NAlaGPS:"),Serial.println(nalaGps);
     // Serial.print("FlagAlarmeGps:"),Serial.println(FlagAlarmeGps);
@@ -742,11 +749,18 @@ void once() {
 }
 //---------------------------------------------------------------------------
 void senddata() {
-  if (decodeGPS() && Online) {    
+  if (decodeGPS() && Online) {
+    FlagAlarmeGps = false;
     char bidon[20];
     sprintf(bidon, "%04d-%02d-%02d %02d:%02d:%02d", year(), month(), day(), hour(), minute(), second());
 
     dataToPublish = String(config.Idchar) +";"+ bidon +";"+ String(lat, 8) +";"+ String(lon, 8)+";"+String(speed, 1) +";"+String(course, 0);
+    dataToPublish += ";"+String(modem.getBattPercent())+";";
+    if(FlagAlarmeTension){
+      dataToPublish += "KO";
+    } else {
+      dataToPublish += "OK";
+    }
     bool rep = mqttClient.publish(config.sendTopic[0], dataToPublish.c_str(), true); // retain
     opmessage = "publication :";
     opmessage += String(rep);
@@ -1006,17 +1020,17 @@ fin_tel:
       message += modem.getOperator() + fl;  // Operateur
     }
     message += read_RSSI() + fl;
-    message += "V SIM7000 = ";
-    message	+= String(modem.getBattVoltage());
-    message += " mV, ";
-    message += fl;
+    // message += "V SIM7000 = ";
+    // message	+= String(modem.getBattVoltage());
+    // message += " mV, ";
+    // message += fl;
     message += ("Ver: ") + ver + fl;
-    if(!VinPresent){                       // si VUSB preset inhibe mesure Batterie
-      message += F("V Batterie = ");
-      message += String(VBatterieProc/1000.0,2) + "V, ";
-      message += String(BattLipopct(VBatterieProc)) + "%";
-    }
-    if(FlagTrackerLoc){ // Tracker Id Loc
+    
+    message += F("V Batterie = ");
+    message += String(modem.getBattVoltage()/1000.0,2) + "V,";
+    message += String(modem.getBattPercent()) + "%";
+    
+    if(FlagTrackerLoc){ // Tracker Id Locomotive
       message += F("V Alim (>=5V) = ");
       message += String(VExterne/1000.0,2) + "V";
     }
@@ -1985,19 +1999,19 @@ void generationMessage() {
   } else {
     message += "GPS KO" + fl;
   }
-  if(!VinPresent){
-    message += F("Batterie : ");				//"Alarme Batterie : "
-    if (FlagAlarmeTension) {
-      message += F("Alarme, ");
-    }
-    else {
-      message += F("OK, ");
-    }
-    message += String(VBatterieProc/1000.0,2) + "V, ";
-    message += String(BattLipopct(VBatterieProc)) + "%";
-    message += fl;
+  
+  message += F("Batterie : ");				//"Alarme Batterie : "
+  if (FlagAlarmeTension) {
+    message += F("Alarme, ");
   }
-  if(FlagTrackerLoc){ // Tracker Id Loc
+  else {
+    message += F("OK, ");
+  }
+  message += String(modem.getBattVoltage()/1000.0,2) + "V,";
+  message += String(modem.getBattPercent()) + "%";
+  message += fl;
+  
+  if(FlagTrackerLoc){ // Tracker Id Locomotive
     message += F("Alim (>=5V) : ");				//"Alarme Alimentation : "
     if (FlagAlarmeTension) {
       message += F("Alarme, ");
@@ -2040,7 +2054,7 @@ void adc_read() {
   read_adc(PinVexterne, PinBattProc); // lecture des adc
   
   VExterne      = map(adc_mm[0] / nSample, 0, 4095, 0, CoeffTension[0]);
-  VBatterieProc = map(adc_mm[1] / nSample, 0, 4095, 0, CoeffTension[1]);
+  // VBatterieProc = map(adc_mm[1] / nSample, 0, 4095, 0, CoeffTension[1]);
 }
 //---------------------------------------------------------------------------
 void read_adc(int pin1, int pin2) {

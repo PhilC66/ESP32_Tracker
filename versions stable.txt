@@ -1,0 +1,26 @@
+Le croquis utilise 1772121 octets (90%) de l'espace de stockage de programmes. Le maximum est de 1966080 octets.
+Les variables globales utilisent 64504 octets (19%) de mémoire dynamique, ce qui laisse 263176 octets pour les variables locales. Le maximum est de 327680 octets.
+
+Used library        Version Path                                                                                            
+ESP32 BLE Arduino   2.0.0   C:\Users\phili\AppData\Local\Arduino15\packages\esp32\hardware\esp32\2.0.17\libraries\BLE       
+BatteriePct Library 1.4     C:\Documents\Arduino\libraries\BatteriePct                                                      
+TinyGSM             10.12.0 C:\Documents\Arduino\libraries\TinyGSMClient-master                                             
+PubSubClient        2.8     C:\Documents\Arduino\libraries\PubSubClient                                                     
+TimeAlarms          1.5     C:\Documents\Arduino\libraries\TimeAlarms-master                                                
+Time                1.6.1   C:\Documents\Arduino\libraries\Time                                                             
+WiFi                2.0.0   C:\Users\phili\AppData\Local\Arduino15\packages\esp32\hardware\esp32\2.0.17\libraries\WiFi      
+SPIFFS              2.0.0   C:\Users\phili\AppData\Local\Arduino15\packages\esp32\hardware\esp32\2.0.17\libraries\SPIFFS    
+FS                  2.0.0   C:\Users\phili\AppData\Local\Arduino15\packages\esp32\hardware\esp32\2.0.17\libraries\FS        
+ArduinoOTA          2.0.0   C:\Users\phili\AppData\Local\Arduino15\packages\esp32\hardware\esp32\2.0.17\libraries\ArduinoOTA
+Update              2.0.0   C:\Users\phili\AppData\Local\Arduino15\packages\esp32\hardware\esp32\2.0.17\libraries\Update    
+WebServer           2.0.0   C:\Users\phili\AppData\Local\Arduino15\packages\esp32\hardware\esp32\2.0.17\libraries\WebServer 
+SPI                 2.0.0   C:\Users\phili\AppData\Local\Arduino15\packages\esp32\hardware\esp32\2.0.17\libraries\SPI       
+SD                  2.0.0   C:\Users\phili\AppData\Local\Arduino15\packages\esp32\hardware\esp32\2.0.17\libraries\SD        
+Ticker              2.0.0   C:\Users\phili\AppData\Local\Arduino15\packages\esp32\hardware\esp32\2.0.17\libraries\Ticker    
+Blinker-master              C:\Documents\Arduino\libraries\Blinker-master                                                   
+ArduinoJson         7.1.0   C:\Documents\Arduino\libraries\ArduinoJson                                                      
+credentials                 C:\Documents\Arduino\libraries\credentials                                                      
+ESPmDNS             2.0.0   C:\Users\phili\AppData\Local\Arduino15\packages\esp32\hardware\esp32\2.0.17\libraries\ESPmDNS   
+
+Used platform Version Path                                                                       
+esp32:esp32   2.0.17  C:\Users\phili\AppData\Local\Arduino15\packages\esp32\hardware\esp32\2.0.17

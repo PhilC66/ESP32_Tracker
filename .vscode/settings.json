@@ -2,6 +2,10 @@
   "files.associations": {
     "*.tpp": "cpp",
     "sstream": "cpp",
-    "netfwd": "cpp"
+    "netfwd": "cpp",
+    "memory": "cpp",
+    "istream": "cpp",
+    "functional": "cpp",
+    "system_error": "cpp"
   }
 }
