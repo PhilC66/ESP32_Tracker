@@ -1,4 +1,4 @@
-Le croquis utilise 1772517 octets (90%) de l'espace de stockage de programmes. Le maximum est de 1966080 octets.
+Le croquis utilise 1772521 octets (90%) de l'espace de stockage de programmes. Le maximum est de 1966080 octets.
 Les variables globales utilisent 64504 octets (19%) de mémoire dynamique, ce qui laisse 263176 octets pour les variables locales. Le maximum est de 327680 octets.
 
 Used library        Version Path                                                                                            
