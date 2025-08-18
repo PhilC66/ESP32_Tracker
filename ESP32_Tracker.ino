@@ -28,9 +28,16 @@
   */
 
 /*
+V1-31 18/08/2025
+Tracker VR001, VR002, VR004
+Correction Alarme GPS et augmentation temps avant Alarme
+Compilation ESP32 2.0.17 V1-10
+avec Flash 4Mo : choisir compilation Minimal SPIFFS (Large APPS with OTA)
+Arduino IDE VSCODE : 1772521 90%, 64504 19% sur PC Vscode
+
 V1-30 16/06/2025
 Correction la mesure Vbatterie par le SIM7000 est faussé car il est alimenté par un régulateur depuis la esp_ble_gattc_search_service
-retour en arriere, mesure de la baterie
+retour en arriere, mesure de la batterie
 Installé VR002,VR003,VR004
 Compilation ESP32 2.0.17 V1-10
 avec Flash 4Mo : choisir compilation Minimal SPIFFS (Large APPS with OTA)
@@ -56,7 +63,7 @@ Arduino IDE 1.8.19 :  sur raspi
 
 #include <Arduino.h>
 
-String ver     = "V1-30";
+String ver     = "V1-31";
 int Magique    = 3;
 
 #define LILYGO_SIM7000G // not define for SIM7000G board only
@@ -645,7 +652,7 @@ void Acquisition() {
   static byte nalaGps = 0;
   if (config.tracker){
     if (!decodeGPS()) {
-      if (nalaGps ++ >= 10) {
+      if (nalaGps ++ >= 50) { // 8mn
         opmessage = "turn OFF GPS";
         modem.disableGPS();
         Alarm.delay(1000);
@@ -662,6 +669,7 @@ void Acquisition() {
         logmessage();
       }
     } else {
+      nalaGps = 0;
       FlagAlarmeGps = false;
     }
     // Serial.print("NAlaGPS:"),Serial.println(nalaGps);
