@@ -368,7 +368,7 @@ void setup() {
     config.logSDcard        = false;
     config.keepAlive        = 300; // 5mn, IMPERATIF pour réduire conso data
     config.timeoutBLE       = 5;   // Timeout BLE au démarrage en minutes
-    String temp             = "TPCF_VR001";
+    String temp             = "TPCF_TTX01";
     temp.toCharArray(config.Idchar, 11);
     String tempapn          = "eapn1.net";//"sl2sfr";//"free"
     String tempUser         = "";
